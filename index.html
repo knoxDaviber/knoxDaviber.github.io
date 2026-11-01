@@ -47,6 +47,7 @@
     .art.snake { background: linear-gradient(135deg, #183f3b, #222744); }
     .art.racing { background: linear-gradient(135deg, #4a2b51, #26395c); }
     .art.chess { background: linear-gradient(135deg, #2b4a4f, #3a3252); }
+    .art.brawl { background: linear-gradient(135deg, #4a2232, #2a2140); }
     .game-content { display: flex; flex: 1; flex-direction: column; align-items: flex-start; padding: 18px; }
     .game h3 { margin: 0 0 5px; font-size: 1.15rem; }
     .game p { margin: 0 0 18px; color: var(--muted); font-size: .94rem; }
@@ -67,7 +68,7 @@
   <main class="wrap">
     <div class="section-head">
       <h2>Game shelf</h2>
-      <span class="count">3 games ready · more to come</span>
+      <span class="count">4 games ready · more to come</span>
     </div>
     <section class="games" aria-label="Games">
       <!-- If you rename the animeSnake repository, update this link to match. -->
@@ -94,6 +95,15 @@
         <div class="game-content">
           <h3>Catch Up</h3>
           <p>A cozy game of chess by the fishing hole. Pull up a seat, make your move, and take your time.</p>
+          <span class="pill">▶ Play game</span>
+        </div>
+      </a>
+
+      <a class="game" href="/oneshot-ninja/" aria-label="Play Oneshot Ninja">
+        <div class="art brawl" aria-hidden="true">🥷</div>
+        <div class="game-content">
+          <h3>Oneshot Ninja</h3>
+          <p>A 3D brawler with combo finishers, charged punches, sword waves, and waves of goblins ending in a boss fight. Controller recommended.</p>
           <span class="pill">▶ Play game</span>
         </div>
       </a>
