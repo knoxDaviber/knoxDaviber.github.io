@@ -56,11 +56,15 @@
     pools: [
       ['lunge', 'burst', 'floor', 'bomb', 'lunge', 'burst'],
       ['lunge', 'combo', 'spray', 'floor', 'shock', 'bomb', 'sweep', 'burst'],
-      ['combo', 'combo', 'sweep', 'storm', 'shock', 'bomb', 'burst', 'spray', 'sweep', 'nova', 'nova']
+      ['combo', 'combo', 'sweep', 'storm', 'shock', 'bomb', 'burst', 'spray', 'sweep', 'nova', 'nova'],
+      ['combo', 'lunge', 'combo', 'sweep', 'nova'] // ASHEN
     ],
-    tele: { lunge: [45, 36, 28], sweep: [50, 40, 32], floor: [70, 55, 45], shock: [70, 55, 45], storm: [60, 55, 45],
-      burst: [25, 20, 16], spray: [30, 24, 18], bomb: [30, 26, 22], nova: [90, 90, 90] },
-    rest: [60, 45, 30],
+    tele: { lunge: [45, 36, 28, 26], sweep: [50, 40, 32, 30], floor: [70, 55, 45], shock: [70, 55, 45], storm: [60, 55, 45],
+      burst: [25, 20, 16], spray: [30, 24, 18], bomb: [30, 26, 22], nova: [90, 90, 90, 90] },
+    rest: [60, 45, 30, 30],
+    // Secret finale (ph 3) for breaking all phases without losing a life in the fight: no guns, posture only, one execute kills.
+    // A hit restarts the duel and costs no life. `keep` = posture left when a stagger runs out.
+    ashen: { parry: 12, dodge: 15, keep: 60 },
     bombs: [{ n: 1, hits: 8, time: 360 }, { n: 2, hits: 8, time: 330 }, { n: 3, hits: 9, time: 300 }]
   };
 
@@ -138,12 +142,16 @@
       if (!q.justed) {
         q.justed = true; q.riposte = DODGE.riposte; q.dodgeCd = 0;
         s.events.push({ t: 'perfect', x: q.x + q.w / 2, y: q.y + q.h / 2, cause });
+        const b = ashen(s);
+        if (b) { q.riposte = 0; addPosture(s, b, BOSS.ashen.dodge); }
       }
       return;
     }
     s.restart = cause;
     s.events.push({ t: 'hurt', x: q.x + q.w / 2, y: q.y + q.h / 2, cause });
   }
+
+  const ashen = s => s.enemies.find(e => e.type === 'boss' && e.ph === 3);
 
   function restart(s) {
     const cause = s.restart; s.restart = null;
@@ -156,7 +164,7 @@
     });
     const boss = s.enemies.find(e => e.type === 'boss');
     if (boss) {
-      Object.assign(boss, { hp: boss.max, posture: 0, state: 'trans', t: 90, x: 700, vx: 0 });
+      Object.assign(boss, { hp: boss.max, posture: 0, state: 'trans', t: 90, x: 700, vx: 0, clean: false });
     } else if (s.phase === 'wave') {
       s.enemies = []; s.wave--; s.phase = 'break'; s.timer = 90; // director rebuilds the same wave
     }
@@ -208,7 +216,8 @@
     if (p.cd > 0) p.cd--;
     const g = p.guns[p.cur], wp = WEAPONS[g.id];
     if (inp.shoot && p.cd === 0 && p.parry === 0 && p.dodge === 0) { // no firing during parry/dodge: those poses hide the gun arm
-      if (g.ammo === 0) {
+      if (ashen(s)) { p.cd = 20; s.events.push({ t: 'empty', p: idx }); } // the guns are dead
+      else if (g.ammo === 0) {
         p.cur = 0; // out of ammo: fall back to pistol
         s.events.push({ t: 'empty', p: idx });
       } else {
@@ -249,14 +258,16 @@
     s.phase = 'boss'; s.wave = WAVES.length;
     spawnEnemy(s, 'boss');
     checkpoint(s);
-    return s.enemies[s.enemies.length - 1];
+    const b = s.enemies[s.enemies.length - 1];
+    b.clean = true;
+    return b;
   }
 
   // kind: 'gun' (20%, x3 staggered) | 'counter' (full, x3 staggered) | 'flat' (execute: exact amount)
   function damageBoss(s, e, dmg, kind) {
-    if (e.state === 'trans') return;
+    if (e.state === 'trans' || (e.ph === 3 && kind !== 'flat')) return;
     const mul = kind === 'flat' ? 1 : (kind === 'gun' ? BOSS.gunMul : 1) * (e.state === 'stagger' ? BOSS.staggerMul : 1);
-    e.hp -= dmg * mul;
+    e.hp -= e.ph === 3 ? e.hp : dmg * mul;
     s.events.push({ t: 'hit', x: e.x + e.w / 2, y: e.y + e.h / 2, kind: 'boss', big: kind !== 'gun' });
     if (e.hp <= 0 && e.ph < 2) { // phase break: new checkpoint + a life back
       e.ph++; e.hp = e.max; e.state = 'trans'; e.t = 120; e.posture = 0; e.vx = 0;
@@ -264,6 +275,12 @@
       s.lives = Math.min(MAX_LIVES, s.lives + 1);
       checkpoint(s);
       s.events.push({ t: 'phase', n: e.ph + 1, x: e.x + e.w / 2, y: e.y + e.h / 2 });
+    } else if (e.hp <= 0 && e.ph === 2 && e.clean) {
+      Object.assign(e, { ph: 3, hp: e.max, state: 'trans', t: 180, posture: 0, vx: 0, dry: 0 });
+      s.bullets = []; s.bombs = []; s.pickups = [];
+      for (const p of s.players) { p.riposte = 0; p.inv = Math.max(p.inv, 60); }
+      s.events.push({ t: 'ashen', x: e.x + e.w / 2, y: e.y + e.h / 2, lives: s.lives });
+      s.lives = 0; // he takes every spare life: the next hit ends the run
     }
   }
 
@@ -290,7 +307,7 @@
     if (e.state !== 'stagger' && e.posture > 0 && s.tick - (e.postT || 0) > C.postureGrace) e.posture = Math.max(0, e.posture - C.postureDrain);
     if (e.state === 'trans' || e.state === 'stagger' || e.state === 'recover') {
       e.vx *= 0.85;
-      if (e.t <= 0) { if (e.state === 'stagger') e.posture = 0; e.state = 'idle'; e.t = C.rest[ph]; }
+      if (e.t <= 0) { if (e.state === 'stagger') e.posture = ph === 3 ? BOSS.ashen.keep : 0; e.state = 'idle'; e.t = C.rest[ph]; }
     } else if (e.state === 'idle') {
       if (p) { e.face = dir; e.vx = Math.abs(dx) > 160 ? dir * 1.3 : e.vx * 0.8; }
       // follow the player between levels so lunges can reach: drop through or hop up
@@ -303,7 +320,7 @@
         if (pick === e.last && pool.length > 1) pick = pool[Math.floor(rand(s) * pool.length)];
         e.dry = PARRYABLE.includes(pick) ? 0 : (e.dry || 0) + 1;
         e.last = pick;
-        if (pick === 'combo') { e.combo = ph === 2 ? 3 : 2; pick = 'lunge'; } else e.combo = 1;
+        if (pick === 'combo') { e.combo = ph >= 2 ? 3 : 2; pick = 'lunge'; } else e.combo = 1;
         bossTele(s, e, pick, C.tele[pick][ph]);
       }
     } else if (e.state === 'tele') {
@@ -333,6 +350,7 @@
           }
           if (e.atk === 'nova') for (const q of s.players) hit(s, q, 'nova');
           s.events.push({ t: 'battack', atk: e.atk, x: e.x + e.w / 2, y: e.y + e.h / 2 });
+          if (e.state === 'stagger') return; // a perfect dodge broke him
           e.state = 'recover'; e.t = 30;
         }
       }
@@ -345,19 +363,20 @@
             e.hitDone = true; q.parry = 0; q.parryCd = 0; q.vx = e.face * 4;
             e.vx = -e.face * 6;
             s.events.push({ t: 'parry', x: (e.x + e.w / 2 + q.x + q.w / 2) / 2, y: q.y + q.h / 2 });
-            addPosture(s, e, C.posturePerParry);
+            addPosture(s, e, ph === 3 ? BOSS.ashen.parry : C.posturePerParry);
             if (e.state === 'stagger') return;
             e.t = 0; // parry ends this swing
-          } else if (q.inv === 0) { e.hitDone = true; hit(s, q, 'lunge'); }
+          } else if (q.inv === 0) { e.hitDone = true; hit(s, q, 'lunge'); if (e.state === 'stagger') return; }
         }
         if (e.t <= 0 || (e.face < 0 && e.x <= 0) || (e.face > 0 && e.x >= W - e.w)) {
           e.vx = 0;
-          if (--e.combo > 0) bossTele(s, e, 'lunge', 20 - ph * 2);
+          if (--e.combo > 0) bossTele(s, e, 'lunge', 20 - Math.min(ph, 2) * 2);
           else { e.state = 'recover'; e.t = 45; } // punish window
         }
       } else if (e.atk === 'sweep') { // perilous: low dash along the floor, parry does nothing — jump it
         e.vx = e.face * 15;
         for (const q of s.players) if (!e.hitDone && q.y + q.h >= FLOOR_Y - 26 && overlap(reachBox(e, 'sweep', { x: e.x, y: FLOOR_Y - 40, w: e.w, h: 40 }), q)) { e.hitDone = true; hit(s, q, 'sweep'); }
+        if (e.state === 'stagger') return;
         if (e.t <= 0 || (e.face < 0 && e.x <= 0) || (e.face > 0 && e.x >= W - e.w)) { e.vx = 0; e.state = 'recover'; e.t = 40; }
       } else { // floor/storm: everything on the ground burns; shock: every platform is live
         e.vx *= 0.8;

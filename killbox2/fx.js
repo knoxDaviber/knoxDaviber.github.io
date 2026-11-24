@@ -8,7 +8,7 @@ const DUST = '#7a6a5c', ASH = '#2b2326', mobLast = new Map(); // enemy id -> las
 let fxs = [], partsAt = 0;
 const fxRnd = (seed, i) => { const v = Math.sin(seed * 12.9898 + i * 78.233) * 43758.5453; return v - Math.floor(v); };
 function fxAdd(k, x, y, o) { fxs.push({ k, x, y, a: 0, r: 20, col: PAPER, at: rt, seed: Math.random() * 99, ...o }); }
-function fxClear() { fxs = []; mobLast.clear(); cutin = null; band = null; partsAt = rt; }
+function fxClear() { fxs = []; mobLast.clear(); ashCache.clear(); cutin = null; band = null; ashAt = panelAt = pageAt = -1; pageShot = null; partsAt = rt; }
 
 function inked(fill, line = 2) { ctx.lineJoin = 'round'; ctx.strokeStyle = INK; ctx.lineWidth = line * 2; ctx.stroke(); ctx.fillStyle = fill; ctx.fill(); }
 function starPath(n, out, inn, seed) { // spikes of uneven length, centred on the origin
@@ -197,6 +197,148 @@ const FX_DRAW = {
     }
   }
 };
+// --- Ashen VULKARN: a paper world, ink fighters. ashAt = tick the colour starts to drain (-1 = not the finale)
+let ashAt = -1;
+const ASH_TURN = 24, ashOn = () => ashAt >= 0 && rt - ashAt >= ASH_TURN;
+function drawAshCover() { // paper rises over the picture, the world changes under it, then it clears
+  if (ashAt < 0 || rt < ashAt) return;
+  const t = rt - ashAt; ctx.globalAlpha = t < ASH_TURN ? t / ASH_TURN : Math.max(0, 1 - (t - ASH_TURN) / 50);
+  if (ctx.globalAlpha) { ctx.fillStyle = PAPER; ctx.fillRect(0, 0, KB.W, KB.H); } ctx.globalAlpha = 1;
+}
+// he puts the spare lives out one by one, then the whole panel breaks and falls. Runs on rt, so it plays through hit-stop.
+let ashLives = 0, panelAt = -1;
+const ASH_HEART = i => 5 + i * 5, ASH_BREAK = 36;
+function ashPanelCue() { // once per tick: sounds, shake, his name
+  const t = rt - panelAt;
+  if (ashAt < 0 || t > ASH_BREAK) return;
+  for (let i = 0; i < ashLives; i++) if (t === ASH_HEART(i)) { SFX.heart(); shake = Math.max(shake, 8); }
+  if (t === ASH_BREAK) { SFX.shatter(); shake = 22; banner = { text: 'ASHEN VULKARN', t: 130 }; }
+}
+function drawAshPanel() { // screen space
+  const t = rt - panelAt, fall = t - ASH_BREAK;
+  if (fall > 70) return;
+  let lit = 0; for (let i = 0; i < ashLives; i++) if (t < ASH_HEART(i)) lit++;
+  ctx.save();
+  if (fall < 0) {
+    const j = t > 5 ? 2.5 * cfg.shake / 100 : 0; ctx.translate((Math.random() - 0.5) * j, (Math.random() - 0.5) * j);
+    const { w, h } = drawLivesPanel(lit, ashLives);
+    ctx.beginPath(); ctx.rect(10, 10, w, h); ctx.clip();
+    ctx.strokeStyle = PAPER; ctx.lineWidth = 1.5; ctx.beginPath(); // cracks spread from the hearts
+    for (let i = 0; i < 9; i++) { const k = Math.max(0, Math.min(1, (t - 5) / (ASH_BREAK - 5) * 1.6 - i * 0.07)); let x = 10 + w * fxRnd(61, i), y = 26; if (!k) continue; ctx.moveTo(x, y); for (let n = 0; n < 4 * k; n++) { x += (fxRnd(i, n) - 0.5) * 34; y += (fxRnd(i + 20, n) - 0.3) * 24; ctx.lineTo(x, y); } }
+    ctx.stroke();
+    for (let i = 0; i < ashLives; i++) { // each heart bursts, right to left: crimson shards
+      const u = (t - ASH_HEART(i)) / 16; if (u < 0 || u > 1) continue;
+      ctx.restore(); ctx.save(); ctx.globalAlpha = 1 - u * u;
+      for (let n = 0; n < 8; n++) { const a = n * 0.785 + fxRnd(i, n), r = 4 + u * 34; ctx.beginPath(); chip(ctx, 29 + (ashLives - 1 - i) * 25 + Math.cos(a) * r, 30 + Math.sin(a) * r + u * u * 26, 5, n + i * 8); inked(CRIMSON, 1); }
+    }
+    ctx.restore(); return;
+  }
+  const cols = 5, rows = 3, p = s.players[0], w = Math.max(Math.max(KB.LIVES, ashLives) * 25 + 18, 158), h = 40 + p.guns.length * 20;
+  const at = (c, r) => [8 + (w + 4) * (c + (c && c < cols ? (fxRnd(71 + r, c) - 0.5) * 0.7 : 0)) / cols, 8 + (h + 4) * (r + (r && r < rows ? (fxRnd(81 + c, r) - 0.5) * 0.7 : 0)) / rows];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) for (let k = 0; k < 2; k++) { // two triangles per cell
+    const tri = k ? [at(c + 1, r), at(c + 1, r + 1), at(c, r + 1)] : [at(c, r), at(c + 1, r), at(c, r + 1)];
+    const id = r * 31 + c * 7 + k, cx = (tri[0][0] + tri[1][0] + tri[2][0]) / 3, cy = (tri[0][1] + tri[1][1] + tri[2][1]) / 3;
+    ctx.save(); ctx.globalAlpha = Math.min(1, (70 - fall) / 25);
+    ctx.translate(cx + (c - 1.5 + fxRnd(91, id)) * fall * 0.9, cy - fall * (0.6 + 2.2 * fxRnd(92, id)) + fall * fall * 0.11); ctx.rotate((fxRnd(93, id) - 0.5) * fall * 0.14); ctx.translate(-cx, -cy);
+    ctx.beginPath(); tri.forEach(([x, y]) => ctx.lineTo(x, y)); ctx.closePath(); ctx.strokeStyle = INK; ctx.lineWidth = 2; ctx.stroke(); ctx.clip();
+    drawLivesPanel(0, ashLives); ctx.restore();
+  }
+  ctx.restore();
+}
+function drawAshWorld() { // replaces the backdrop and floor
+  ctx.fillStyle = PAPER; ctx.fillRect(-60, -60, KB.W + 120, KB.H + 120);
+  ctx.save(); ctx.translate(KB.W / 2, 250); for (const [r, w, a] of [[190, 26, 0.1], [214, 5, 0.16], [150, 2, 0.12]]) { ctx.globalAlpha = a; ringPath(r); ctx.strokeStyle = INK; ctx.lineWidth = w; ctx.stroke(); } ctx.restore(); // a brushed sun
+  ctx.fillStyle = INK;
+  for (let i = 0; i < 46; i++) { // ash falls upward
+    const u = (fxRnd(3, i) + rt * (0.0009 + 0.0012 * fxRnd(5, i))) % 1, r = 1 + 2.2 * fxRnd(9, i);
+    ctx.save(); ctx.globalAlpha = 0.5 * Math.sin(u * Math.PI); ctx.translate(fxRnd(7, i) * KB.W + Math.sin(u * 9 + i) * 14, KB.FLOOR_Y + 10 - u * 560); ctx.rotate(i + u * 6); dartPath(-r, r, r * 0.6); ctx.fill(); ctx.restore();
+  }
+  for (const p of KB.PLATFORMS) { // brush strokes: flat where you stand, ragged underneath
+    ctx.beginPath(); ctx.moveTo(p.x - (p.solid ? 60 : 4), p.y); ctx.lineTo(p.x + p.w + (p.solid ? 60 : 4), p.y);
+    const n = Math.round(p.w / 14); for (let i = n; i >= 0; i--) ctx.lineTo(p.x + p.w * i / n, p.y + (p.solid ? 110 : 4 + 7 * fxRnd(p.x + p.y, i)));
+    ctx.closePath(); ctx.fill();
+  }
+}
+function ashWear() { // 0 whole .. 1 falling apart: he crumbles as his posture fills, then collapses
+  if (bossDeath) return 1 + Math.max(0, Math.min(1, (rt - bossDeath.at) / 70)) * 5;
+  const b = s.enemies.find(e => e.type === 'boss'); return b ? Math.min(1, b.posture / KB.BOSS.postureMax) : 0;
+}
+function chip(c, x, y, r, seed) { // an angular shard: 4 or 5 corners, longer than it is wide
+  const n = 4 + (seed & 1), t = fxRnd(seed, 77) * 6.28, ct = Math.cos(t), st = Math.sin(t);
+  for (let i = 0; i < n; i++) { const a = (i + 0.7 * fxRnd(seed, i)) / n * 6.28, u = Math.cos(a) * r * 1.5, v = Math.sin(a) * r * 0.55, px = x + u * ct - v * st, py = y + u * st + v * ct; if (i) c.lineTo(px, py); else c.moveTo(px, py); }
+  c.closePath();
+}
+const ashCache = new Map(); // finished stone frames, rebuilt only when the pose or the wear step changes
+function ashFrame(im, A, f, fx, fy) {
+  const wear = Math.round(Math.min(1, ashWear()) * 5) + Math.round(Math.max(0, ashWear() - 1) * 2), key = f + '|' + wear;
+  if (ashCache.has(key)) return ashCache.get(key);
+  if (ashCache.size > 24) ashCache.delete(ashCache.keys().next().value);
+  const cell = document.createElement('canvas'), out = document.createElement('canvas'); cell.width = out.width = A.w; cell.height = out.height = A.h;
+  const c = cell.getContext('2d'), draw = (g, x = 0, y = 0) => g.drawImage(im, fx, fy, A.w, A.h, x, y, A.w, A.h), k = wear > 5 ? 1 + (wear - 5) / 2 : wear / 5;
+  draw(c); ashStone(c, A, f, k);
+  c.globalCompositeOperation = 'multiply'; c.globalAlpha = 0.3; draw(c); // his own ink and bones
+  c.globalCompositeOperation = 'lighten'; c.globalAlpha = 1; draw(c); // eyes and hot cracks stay bright
+  c.globalCompositeOperation = 'saturation'; c.fillStyle = '#808080'; c.fillRect(0, 0, A.w, A.h);
+  c.globalCompositeOperation = 'destination-in'; draw(c); ashErode(c, A, k);
+  const o = out.getContext('2d'); // ink contour, so pale stone holds on paper
+  for (const [x, y] of [[3, 0], [-3, 0], [0, 3], [0, -3]]) o.drawImage(cell, x, y);
+  o.globalCompositeOperation = 'source-in'; o.fillStyle = INK; o.fillRect(0, 0, A.w, A.h); o.globalCompositeOperation = 'source-over'; o.drawImage(cell, 0, 0);
+  ashCache.set(key, out); return out;
+}
+function ashStone(c, A, f, wear) { // pale stone, darker and lighter plates, long cracks; the caller clips it to the body
+  c.globalCompositeOperation = 'source-over'; c.fillStyle = '#8f887e'; c.fillRect(0, 0, A.w, A.h);
+  for (const [col, n, r, a] of [['#b9b2a6', 45, 24, 0.5], ['#5c5752', 45, 22, 0.45], ['#2a2827', 45, 8, 0.6], ['#d8d1c4', 40, 5, 0.7]]) {
+    c.globalAlpha = a; c.fillStyle = col; c.beginPath();
+    for (let i = 0; i < n; i++) chip(c, 180 + fxRnd(f + r, i) * (A.w - 360), 90 + fxRnd(f + r + 40, i) * (A.h - 100), r * (0.4 + fxRnd(f + 3, i)), i);
+    c.fill();
+  }
+  c.globalAlpha = 1; c.strokeStyle = INK; c.lineWidth = 2.2; c.beginPath();
+  const n = 8 + Math.min(1, wear) * 16;
+  for (let i = 0; i < n; i++) { let x = 220 + fxRnd(f + 11, i) * (A.w - 440), y = 110 + fxRnd(f + 12, i) * (A.h - 150); c.moveTo(x, y); for (let j = 0; j < 5; j++) { x += (fxRnd(i + f, j) - 0.5) * 34; y += (fxRnd(i + f + 60, j) - 0.35) * 26; c.lineTo(x, y); } }
+  c.stroke();
+}
+function ashErode(c, A, wear) { // slabs missing: few and large while he is whole, many as he wears down
+  const n = 22 + 60 * wear;
+  c.globalCompositeOperation = 'destination-out'; c.beginPath();
+  for (let i = 0; i < n; i++) chip(c, 170 + fxRnd(21, i) * (A.w - 340), 80 + fxRnd(22, i) * (A.h - 90), 3 + 10 * fxRnd(23, i) ** 2, i);
+  c.fill(); c.globalCompositeOperation = 'source-over';
+}
+function drawAshFlakes(x, feet) { // chips of him lift off and drift up
+  const n = 16 + Math.min(1, ashWear()) * 30;
+  for (let i = 0; i < n; i++) {
+    const u = (fxRnd(31, i) + rt * (0.006 + 0.006 * fxRnd(32, i))) % 1, r = (1.4 + 3 * fxRnd(33, i)) * (1 - u * 0.6);
+    ctx.save(); ctx.globalAlpha = 1 - u * u; ctx.translate(x + (fxRnd(34, i) - 0.5) * 120 + Math.sin(u * 6 + i) * 10, feet - 8 - fxRnd(35, i) * 90 - u * 60); ctx.rotate(i + u * 5);
+    ctx.beginPath(); chip(ctx, 0, 0, r, i); ctx.fillStyle = i % 3 ? '#6b6661' : INK; ctx.fill(); ctx.restore();
+  }
+}
+function drawAshDeath() { // over the reversed print and the fighters: the stone he has become, breaking round the spear tip
+  if (!cutin || !cutin.ash || rt - cutin.at < cutin.shot) return;
+  const c = cutin, t = rt - c.at - c.shot, out = Math.max(0, (rt - c.at - c.out) / (c.end - c.out)), k = 1 - (1 - Math.min(1, t / 7)) ** 3, W = KB.W, H = KB.H, d = 560 + t * 0.5;
+  ctx.save(); ctx.setTransform(RS, 0, 0, RS, 0, 0); if (c.flip) { ctx.translate(W, 0); ctx.scale(-1, 1); }
+  ctx.globalAlpha = cfg.flashes ? 1 : k * (1 - out);
+  ctx.translate((1 - k) * 420 + (cfg.flashes ? out * out * 520 : 0), 0);
+  const edge = x => { ctx.beginPath(); ctx.moveTo(x + 150, -10); ctx.lineTo(W + 40, -10); ctx.lineTo(W + 40, H + 10); ctx.lineTo(x, H + 10); ctx.closePath(); };
+  edge(528); ctx.fillStyle = PAPER; ctx.fill(); edge(536); ctx.fillStyle = INK; ctx.fill(); ctx.clip();
+  const j = Math.max(0, 1 - t / 20) * 12 * cfg.shake / 100;
+  ctx.save(); ctx.translate(770 + (Math.random() - 0.5) * j, H + 14); ctx.scale(-1, 1); ctx.drawImage(DEATH_IMG, -d / 2, -d, d, d); ctx.restore(); // the art faces right; mirrored, he faces KITE
+  for (let i = 0; i < 34; i++) { // slabs break off and lift
+    const u = t / 46 - fxRnd(101, i) * 0.6; if (u <= 0) continue;
+    const r = 4 + 13 * fxRnd(102, i); ctx.save(); ctx.globalAlpha *= Math.max(0, 1 - u * 0.8); ctx.translate(620 + 320 * fxRnd(103, i) + (fxRnd(104, i) - 0.5) * 120 * u, 120 + 380 * fxRnd(105, i) - u * 170); ctx.rotate(u * 4 * (fxRnd(106, i) - 0.5)); ctx.beginPath(); chip(ctx, 0, 0, r, i); inked(i % 3 ? '#b9b2a6' : '#8f887e', 1.5); ctx.restore();
+  }
+  ctx.restore();
+}
+function drawAshFlip() { // the last cut-in is printed in reverse: grey the picture so far, then invert it
+  if (!ashOn() || !cutin || !cfg.flashes) return;
+  ctx.save(); ctx.setTransform(RS, 0, 0, RS, 0, 0);
+  ctx.globalCompositeOperation = 'saturation'; ctx.fillStyle = '#808080'; ctx.fillRect(0, 0, KB.W, KB.H);
+  ctx.globalCompositeOperation = 'difference'; ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, KB.W, KB.H); ctx.restore();
+}
+function drawAshPosture(boss) { // the only HUD: an ink line that fills crimson from the middle
+  const k = Math.min(1, boss.posture / KB.BOSS.postureMax), w = 360, x = KB.W / 2, y = 30;
+  dartPathAt(x, y, w / 2 + 8, 5); ctx.fillStyle = INK; ctx.fill();
+  if (k > 0) { dartPathAt(x, y, w / 2 * k, 3.4); ctx.fillStyle = CRIMSON; ctx.fill(); }
+}
+function dartPathAt(x, y, r, w) { ctx.beginPath(); ctx.moveTo(x - r, y); ctx.lineTo(x, y - w); ctx.lineTo(x + r, y); ctx.lineTo(x, y + w); ctx.closePath(); }
 function drawCrosshair() { // screen space, over the HUD; opens with each shot
   const g = 7 + 8 * Math.max(0, 1 - (rt - lastShot) / 10);
   ctx.save(); ctx.translate(mouse.x, mouse.y);
@@ -239,7 +381,7 @@ function drawParts() { // ink-edged shards that stretch along their path
     for (let i = 0; i < n; i++) { q.x += q.vx; q.y += q.vy; q.vy += 0.2; q.life--; }
     if (q.life <= 0) continue;
     const L = 2 + Math.min(6, Math.hypot(q.vx, q.vy));
-    ctx.save(); ctx.globalAlpha = Math.min(1, q.life / 15); ctx.translate(q.x, q.y); ctx.rotate(Math.atan2(q.vy, q.vx)); dartPath(-L, L, 1.8); inked(q.col, 0.7); ctx.restore();
+    ctx.save(); ctx.globalAlpha = Math.min(1, q.life / 15); if (ashOn() && ![GOLD, DANGER, CRIMSON].includes(q.col)) q.col = INK; ctx.translate(q.x, q.y); ctx.rotate(Math.atan2(q.vy, q.vx)); dartPath(-L, L, 1.8); inked(q.col, 0.7); ctx.restore();
   }
   parts = parts.filter(q => q.life > 0);
 }
@@ -260,6 +402,7 @@ function fxEvent(e) {
   if (e.t === 'boom') fxAdd('firework', e.x, e.y);
   if (e.t === 'defuse') fxAdd('ring', e.x, e.y, { r: 34, col: CYAN });
   if (e.t === 'phase') fxAdd('ring', e.x, e.y, { r: 190, col: EMBER });
+  if (e.t === 'ashen') fxAdd('ring', e.x, e.y, { r: 260, col: PAPER });
   if (e.t === 'spawn') fxAdd('spawn', e.x + 12, e.y + 16);
   if (e.t === 'die' && e.kind !== 'boss') { fxAdd('ash', e.x, e.y + KB.ENEMIES[e.kind].h / 2, { kind: e.kind, pose: mobLast.get(e.id) || { f: 0, face: 1 } }); mobLast.delete(e.id); }
   if (e.t === 'dodge') {
@@ -271,9 +414,10 @@ function fxEvent(e) {
 
 // --- execute cut-in (art/cutin, built by assets/src/build_cutin.py). The sim step that lands the execute waits for the shot,
 // so health bars, deaths and phase breaks all happen on it. Ticks: slam in, eye glint, shot, tear away, end.
-const CUT = { boss: { slam: 8, glint: 22, shot: 28, out: 35, end: 45 }, duel: { slam: 6, glint: 11, shot: 16, out: 21, end: 28 } };
+const CUT = { boss: { slam: 8, glint: 22, shot: 28, out: 35, end: 45 }, ash: { slam: 8, glint: 22, shot: 30, out: 76, end: 88 }, duel: { slam: 6, glint: 11, shot: 16, out: 21, end: 28 } };
 const CUT_IMG = [0, 1, 2].map(i => { const im = new Image(); im.src = 'assets/out/cutin_' + i + '.webp'; return im; });
 const CUT_EYES = [[0.456, 0.237], [0.541, 0.273]], CUT_BORE = [0.931, 0.218]; // measured on the art, as fractions of its size
+const SPEAR_EYES = [[0.459, 0.237], [0.545, 0.277]], SPEAR_TIP = [0.979, 0.034];
 const CUT_SIZE = 560;
 let cutin = null;
 // soft light, added to whatever is under it
@@ -291,11 +435,11 @@ function sheen(x, alpha) { // slanted beam, 180 px wide
   ctx.fillStyle = g; ctx.fillRect(x - 90, -20, 180, KB.H + 40); ctx.restore();
 }
 function startCutin(inp) { // true = this press will land an execute; a copy of the sim is stepped to be sure
-  if (!inp.execute || s.players[0].prevExec || !s.enemies.some(e => e.state === 'stagger') || !CUT_IMG.every(i => i.complete && i.naturalWidth)) return false;
+  if (!inp.execute || s.players[0].prevExec || !s.enemies.some(e => e.state === 'stagger') || !CUT_IMG.every(i => i.complete && i.naturalWidth) || ashOn() && !(SPEAR_IMG.naturalWidth && DEATH_IMG.naturalWidth)) return false;
   const next = structuredClone(s); KB.step(next, [inp]);
   const hit = next.events.find(e => e.t === 'execute');
   if (!hit) return false;
-  cutin = { at: rt, inp, flip: hit.x < s.players[0].x + s.players[0].w / 2, seed: Math.random() * 99, ...CUT[hit.kind === 'boss' ? 'boss' : 'duel'] };
+  cutin = { at: rt, inp, flip: hit.x < s.players[0].x + s.players[0].w / 2, seed: Math.random() * 99, ash: ashOn(), ...CUT[ashOn() ? 'ash' : hit.kind === 'boss' ? 'boss' : 'duel'] };
   band = null; SFX.cutin();
   return true;
 }
@@ -326,8 +470,8 @@ function drawCutin() { // screen space, behind the fighters
   ctx.restore();
   // KITE, pinned to the bottom-left so the art's cropped edges stay off-screen
   const back = slam >= 1 ? Math.max(0, 1 - (t - c.slam) / 5) * 10 : 0, grow = 1 + 0.05 * Math.min(1, t / c.out) + 0.03 * kick;
-  ctx.translate(-34 + (slam - 1) * 620 + back, H + 12); ctx.scale(grow, grow);
-  const im = CUT_IMG[t < c.glint ? 0 : t < c.shot ? 1 : 2], n = 40, sw = im.naturalWidth / n, dw = CUT_SIZE / n;
+  ctx.translate(-34 + (slam - 1) * 620 + back + (c.ash && t >= c.shot ? 26 * ease((t - c.shot) / 5) : 0), H + 12); ctx.scale(grow * (c.ash ? 0.9 : 1), grow * (c.ash ? 0.9 : 1)); // the blade needs the headroom
+  const im = c.ash ? SPEAR_IMG : CUT_IMG[t < c.glint ? 0 : t < c.shot ? 1 : 2], n = 40, sw = im.naturalWidth / n, dw = CUT_SIZE / n;
   for (let i = 0; i < n; i++) { // hair and coat sway: only the trailing 40% moves, the face stays still
     const sway = (Math.max(0, 0.4 - i / n) / 0.4) ** 2 * 5 * Math.sin(t / 2.5 + i * 0.35);
     ctx.drawImage(im, i * sw, 0, sw, im.naturalHeight, i * dw, -CUT_SIZE + sway, dw + 0.6, CUT_SIZE);
@@ -335,9 +479,12 @@ function drawCutin() { // screen space, behind the fighters
   const at = ([u, v]) => ctx.translate(u * CUT_SIZE, (v - 1) * CUT_SIZE);
   if (t >= c.glint && t < c.shot + 3) { // light catches his eyes
     const g = Math.sin(Math.min(1, (t - c.glint + 1) / (c.shot + 3 - c.glint)) * Math.PI) * lum;
-    CUT_EYES.forEach((e, i) => { ctx.save(); at(e); glow(0, 0, i ? 34 : 46, '#ff3b4f', 0.9 * g); ctx.rotate(0.14); flare(i ? 90 : 190, 2.5, PAPER, g); ctx.restore(); });
+    (c.ash ? SPEAR_EYES : CUT_EYES).forEach((e, i) => { ctx.save(); at(e); glow(0, 0, i ? 34 : 46, '#ff3b4f', 0.9 * g); ctx.rotate(0.14); flare(i ? 90 : 190, 2.5, PAPER, g); ctx.restore(); });
   }
-  if (t >= c.shot) { // the shot: one burst of light that blooms and fades
+  if (t >= c.shot && c.ash) { // the stab: no fire, one cold line of light off the point
+    const g = Math.max(0, 1 - (t - c.shot) / 26) ** 2 * lum;
+    ctx.save(); at(SPEAR_TIP); glow(0, 0, 200, '#ffffff', 0.8 * g); ctx.rotate(-1.05); flare(560, 6, PAPER, g); ctx.rotate(1.57); flare(150, 3, PAPER, 0.7 * g); ctx.restore();
+  } else if (t >= c.shot) { // the shot: one burst of light that blooms and fades
     const g = Math.max(0, 1 - (t - c.shot) / (c.end - c.shot)) ** 2 * lum, open = 1 + (t - c.shot) * 0.06;
     ctx.save(); at(CUT_BORE); glow(0, 0, 520 * open, EMBER, 0.6 * g); glow(0, 0, 250 * open, AMBER, 0.9 * g); glow(0, 0, 110, '#ffffff', g);
     flare(620 * open, 7, HOT, g); ctx.rotate(-1.25); flare(330 * open, 4, HOT, 0.8 * g); ctx.restore();

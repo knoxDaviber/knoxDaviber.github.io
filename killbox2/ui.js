@@ -7,7 +7,7 @@ const DEFAULT_BINDS = { left: ['KeyA', ''], right: ['KeyD', ''], jump: ['KeyW', 
   parry: ['Mouse2', 'KeyF'], dodge: ['ShiftLeft', 'KeyC'], execute: ['KeyE', 'KeyV'], swap: ['KeyQ', ''] };
 const ACTIONS = [['left', 'Move left'], ['right', 'Move right'], ['jump', 'Jump'], ['down', 'Drop down'], ['shoot', 'Shoot'],
   ['parry', 'Parry'], ['dodge', 'Dodge'], ['execute', 'Execute'], ['swap', 'Swap weapon']];
-const DEFAULTS = { volume: 70, muted: false, shake: 100, flashes: true, motionBlur: true, outlines: true, music: 60, quality: 'high', tutorial: true, autoPause: true };
+const DEFAULTS = { volume: 70, muted: false, shake: 100, flashes: true, motionBlur: true, outlines: true, music: 60, quality: 'high', tutorial: true, autoPause: true, opening: 'drawn' };
 const copyBinds = b => Object.fromEntries(Object.entries(b).map(([k, v]) => [k, v.slice()]));
 function loadSettings() {
   let saved = {};
@@ -70,9 +70,14 @@ function qualityRow() {
   const b = button(name(), () => { cfg.quality = cfg.quality === 'high' ? 'low' : 'high'; b.textContent = name(); saveSettings(); fit(); dirty = true; }, 'tog on');
   return h('div', { class: 'row' }, h('label', {}, 'Graphics'), h('span', { class: 'ctl' }, b));
 }
+function openingRow() { // which KITE falls through the title; it changes behind the panel at once
+  const name = () => cfg.opening === 'chunky' ? 'Chunky' : 'Drawn';
+  const b = button(name(), () => { cfg.opening = cfg.opening === 'chunky' ? 'drawn' : 'chunky'; b.textContent = name(); saveSettings(); }, 'tog on');
+  return h('div', { class: 'row' }, h('label', {}, 'Opening KITE'), h('span', { class: 'ctl' }, b));
+}
 function generalTab() {
   return [h('h3', {}, 'Audio'), slider('Volume', 'volume', applyVolume), slider('Music', 'music', applyVolume), toggle('Mute', 'muted', applyVolume),
-    h('h3', {}, 'Display'), fullscreenRow(), qualityRow(), slider('Screen shake', 'shake'), toggle('Screen flashes', 'flashes'), toggle('Motion blur (afterimages)', 'motionBlur'), toggle('Enemy outlines', 'outlines'),
+    h('h3', {}, 'Display'), fullscreenRow(), qualityRow(), slider('Screen shake', 'shake'), toggle('Screen flashes', 'flashes'), toggle('Motion blur (afterimages)', 'motionBlur'), toggle('Enemy outlines', 'outlines'), openingRow(),
     h('h3', {}, 'Gameplay'), toggle('Tutorial signs', 'tutorial', () => { if (typeof s !== 'undefined') s.hold = false; }), toggle('Pause when window loses focus', 'autoPause')];
 }
 function controlsTab() {
@@ -95,29 +100,42 @@ function settingsPanel() {
 }
 const PANELS = {
   menu: () => h('div', { class: 'home' }, h('h1', {}, 'KILLBOX', h('b', {}, '2')), h('div', { class: 'stack' },
-    button('Play', startGame, 'primary'), button('Settings', () => show('settings')))),
+    button('Play', playFromTitle, 'primary'), button('Settings', () => show('settings')))),
   pause: () => h('div', { class: 'panel' }, h('h2', {}, 'Paused'), h('div', { class: 'stack' }, button('Resume', resumeGame, 'primary'),
     button('Settings', () => show('settings')), confirmButton('Restart', startGame), confirmButton('Main menu', toMenu))),
   over: () => {
     const won = s.phase === 'clear';
     return h('div', { class: 'panel' }, h('h2', { class: won ? 'win' : 'lose' }, won ? 'Arena clear' : 'You died'),
-      h('p', { class: 'note' }, won ? 'VULKARN is slag.' : s.phase === 'dead' && s.enemies.some(e => e.type === 'boss') ? 'Fell to VULKARN.' : 'Fell on wave ' + Math.max(1, s.wave) + ' of ' + KB.WAVES.length + '.'),
-      h('div', { class: 'stack' }, button(won ? 'Play again' : 'Try again', startGame, 'primary'), button('Main menu', toMenu)));
+      h('p', { class: 'note' }, won ? (ashAt >= 0 ? 'Not a life lost to VULKARN. Even his ash is gone.' : 'VULKARN is slag.') : s.phase === 'dead' && s.enemies.some(e => e.type === 'boss') ? 'Fell to VULKARN.' : 'Fell on wave ' + Math.max(1, s.wave) + ' of ' + KB.WAVES.length + '.'),
+      h('div', { class: 'stack' }, button(won ? 'Play again' : 'Try again', () => startGame(), 'primary'), button('Main menu', toMenu)));
   },
   settings: settingsPanel
 };
 function show(name) {
-  panel = name; uiEl.replaceChildren(PANELS[name]()); uiEl.hidden = false;
+  panel = name; uiEl.classList.remove('torn'); uiEl.replaceChildren(PANELS[name]()); uiEl.hidden = false;
   uiEl.classList.toggle('dim', mode !== 'menu');
   const wait = uiEl.querySelector('.wait'), first = uiEl.querySelector('.primary');
   if (wait) wait.focus({ preventScroll: true }); else if (first && name !== 'settings') first.focus({ preventScroll: true });
 }
+// the mouse is captured during play; pausing (or Esc, which the browser always allows) frees it
+let freedAt = -1e9;
+function grabMouse() { // refused without a click, or for about a second after Esc: the next click in the arena tries again
+  if (document.pointerLockElement === cv || !cv.requestPointerLock) return;
+  try { Promise.resolve(cv.requestPointerLock()).catch(() => {}); } catch (_) { /* play on uncaptured */ }
+}
+function freeMouse() { if (document.pointerLockElement) document.exitPointerLock(); }
+document.addEventListener('pointerlockchange', () => {
+  if (document.pointerLockElement) { if (mode !== 'play' && mode !== 'drop') freeMouse(); return; } // granted after the player had already paused
+  if (mode === 'play' && (cfg.autoPause || document.hasFocus())) { freedAt = performance.now(); pauseGame(); }
+});
 function releaseInput() { for (const k in keys) delete keys[k]; }
-function startGame() { releaseInput(); restart(); cam.z = ZOOM; cam.x = s.players[0].x; cam.y = KB.H; mode = 'play'; uiEl.hidden = true; uiEl.replaceChildren(); audio(); }
-function resumeGame() { releaseInput(); mode = 'play'; uiEl.hidden = true; uiEl.replaceChildren(); }
-function pauseGame() { if (mode !== 'play') return; releaseInput(); mode = 'pause'; dirty = true; show('pause'); }
-function gameOver() { releaseInput(); mode = 'over'; dirty = true; show('over'); }
-function toMenu() { releaseInput(); restart(); mode = 'menu'; show('menu'); }
+function hideMenu() { uiEl.classList.remove('torn'); uiEl.hidden = true; uiEl.replaceChildren(); }
+function startGame() { releaseInput(); restart(); hideMenu(); audio(); grabMouse(); startDrop(false); } // again: straight to the landing
+function playFromTitle() { releaseInput(); restart(); audio(); grabMouse(); uiEl.classList.add('torn'); startDrop(true); } // the menu is torn away as he drops
+function resumeGame() { releaseInput(); mode = 'play'; uiEl.hidden = true; uiEl.replaceChildren(); grabMouse(); }
+function pauseGame() { if (mode !== 'play') return; releaseInput(); mode = 'pause'; freeMouse(); dirty = true; show('pause'); }
+function gameOver() { releaseInput(); mode = 'over'; freeMouse(); dirty = true; show('over'); }
+function toMenu() { releaseInput(); restart(); mode = 'menu'; freeMouse(); show('menu'); }
 function backFromSettings() { capture = null; show(mode === 'menu' ? 'menu' : mode === 'over' ? 'over' : 'pause'); }
 
 // --- rebinding and menu keys
@@ -129,12 +147,14 @@ function bindCapture(code) {
 function uiKey(e) { // returns true when the key belongs to the UI
   if (capture) { e.preventDefault(); if (e.repeat) return true; if (e.code === 'Escape') { capture = null; show('settings'); } else bindCapture(e.code); return true; }
   const taken = Object.values(cfg.binds).some(b => b.includes(e.code));
+  if (mode === 'drop') { e.preventDefault(); if (!e.repeat) skipDrop(); return true; }
   if (mode === 'play') {
     if (!e.repeat && (e.code === 'Escape' || (e.code === 'KeyP' && !taken))) { e.preventDefault(); pauseGame(); return true; }
+    if (!e.repeat) skipPage();
     if (taken || e.code === 'Space') e.preventDefault();
     return false;
   }
-  if (e.repeat && e.code === 'Escape') return true;
+  if (e.code === 'Escape' && (e.repeat || performance.now() - freedAt < 200)) return true; // the Esc that freed the mouse must not also resume
   if (e.code === 'Escape') {
     if (panel === 'settings') backFromSettings(); else if (mode === 'pause') resumeGame();
     return true;
