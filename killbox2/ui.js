@@ -7,7 +7,7 @@ const DEFAULT_BINDS = { left: ['KeyA', ''], right: ['KeyD', ''], jump: ['KeyW', 
   parry: ['Mouse2', 'KeyF'], dodge: ['ShiftLeft', 'KeyC'], execute: ['KeyE', 'KeyV'], swap: ['KeyQ', ''] };
 const ACTIONS = [['left', 'Move left'], ['right', 'Move right'], ['jump', 'Jump'], ['down', 'Drop down'], ['shoot', 'Shoot'],
   ['parry', 'Parry'], ['dodge', 'Dodge'], ['execute', 'Execute'], ['swap', 'Swap weapon']];
-const DEFAULTS = { volume: 70, muted: false, shake: 100, flashes: true, quality: 'high', tutorial: true, autoPause: true };
+const DEFAULTS = { volume: 70, muted: false, shake: 100, flashes: true, motionBlur: true, outlines: true, music: 60, quality: 'high', tutorial: true, autoPause: true };
 const copyBinds = b => Object.fromEntries(Object.entries(b).map(([k, v]) => [k, v.slice()]));
 function loadSettings() {
   let saved = {};
@@ -71,8 +71,8 @@ function qualityRow() {
   return h('div', { class: 'row' }, h('label', {}, 'Graphics'), h('span', { class: 'ctl' }, b));
 }
 function generalTab() {
-  return [h('h3', {}, 'Audio'), slider('Volume', 'volume', applyVolume), toggle('Mute', 'muted', applyVolume),
-    h('h3', {}, 'Display'), fullscreenRow(), qualityRow(), slider('Screen shake', 'shake'), toggle('Screen flashes', 'flashes'),
+  return [h('h3', {}, 'Audio'), slider('Volume', 'volume', applyVolume), slider('Music', 'music', applyVolume), toggle('Mute', 'muted', applyVolume),
+    h('h3', {}, 'Display'), fullscreenRow(), qualityRow(), slider('Screen shake', 'shake'), toggle('Screen flashes', 'flashes'), toggle('Motion blur (afterimages)', 'motionBlur'), toggle('Enemy outlines', 'outlines'),
     h('h3', {}, 'Gameplay'), toggle('Tutorial signs', 'tutorial', () => { if (typeof s !== 'undefined') s.hold = false; }), toggle('Pause when window loses focus', 'autoPause')];
 }
 function controlsTab() {
@@ -149,7 +149,6 @@ function uiKey(e) { // returns true when the key belongs to the UI
 }
 addEventListener('mousedown', e => { if (capture) { e.preventDefault(); e.stopPropagation(); swallowClick = true; bindCapture('Mouse' + e.button); } }, true);
 addEventListener('click', e => { if (swallowClick) { swallowClick = false; e.preventDefault(); e.stopPropagation(); } }, true);
-uiEl.addEventListener('contextmenu', e => e.preventDefault());
 addEventListener('blur', () => { if (cfg.autoPause) pauseGame(); else releaseInput(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) pauseGame(); });
 document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) pauseGame(); if (panel === 'settings' && !uiEl.hidden) show('settings'); });

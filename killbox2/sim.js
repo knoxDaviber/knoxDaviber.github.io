@@ -31,7 +31,7 @@
   };
   // Wave 1 is the tutorial: `seq` spawns one at a time in order, each teaching one boss rule.
   const WAVES = [
-    { seq: ['grunt', 'grunt', 'brute', 'orber', 'bomber', 'reaver'] },
+    { seq: ['grunt', 'grunt', 'brute', 'gunner', 'orber', 'bomber', 'reaver'] },
     { grunt: 3, gunner: 1, orber: 1, brute: 1 },
     { grunt: 3, gunner: 2, orber: 1, bomber: 1, reaver: 1 }
   ];
@@ -45,19 +45,21 @@
     // Parry/deflect = posture only, no damage. Stagger = 3x gun damage + EXECUTE (flat, close range, ends stagger).
     gunMul: 0.2, staggerMul: 3, postureMax: 100, posturePerParry: 34, posturePerDeflect: 12, stagger: 150,
     execute: 150, executeRange: 90, pity: 2,
+    posturePerDmg: 0.04, // duelists only: gunfire dents posture (pistol alone ~1 min to stagger)
     reach: { lunge: 165, sweep: 130 }, // spear tip, measured from the body centre in the thrust and sweep art
     postureDrain: 0.05, postureGrace: 240, // drain per tick, after `grace` ticks without a posture gain
     // unshot bomb erupts into homing white orbs (parry to deflect): count, speed, homing ticks per phase
     firework: [{ n: 8, speed: 4, home: 150 }, { n: 12, speed: 4.5, home: 170 }, { n: 16, speed: 5, home: 190 }],
     // lunge/combo: white, parry it. sweep: red, unparryable, jump it. floor/shock/storm: red zone, move.
+    // nova (phase 3): hits everywhere on one tick; only a just-frame dodge survives it.
     // burst: white orbs, parry to deflect back. spray: dodge. bomb: shoot it down.
     pools: [
       ['lunge', 'burst', 'floor', 'bomb', 'lunge', 'burst'],
       ['lunge', 'combo', 'spray', 'floor', 'shock', 'bomb', 'sweep', 'burst'],
-      ['combo', 'combo', 'sweep', 'storm', 'shock', 'bomb', 'burst', 'spray', 'sweep']
+      ['combo', 'combo', 'sweep', 'storm', 'shock', 'bomb', 'burst', 'spray', 'sweep', 'nova', 'nova']
     ],
     tele: { lunge: [45, 36, 28], sweep: [50, 40, 32], floor: [70, 55, 45], shock: [70, 55, 45], storm: [60, 55, 45],
-      burst: [25, 20, 16], spray: [30, 24, 18], bomb: [30, 26, 22] },
+      burst: [25, 20, 16], spray: [30, 24, 18], bomb: [30, 26, 22], nova: [90, 90, 90] },
     rest: [60, 45, 30],
     bombs: [{ n: 1, hits: 8, time: 360 }, { n: 2, hits: 8, time: 330 }, { n: 3, hits: 9, time: 300 }]
   };
@@ -112,6 +114,7 @@
 
   // Players shoot from the sprite's gun muzzle (shoulder + barrel); enemies from their chest.
   const GUNNER = { pivot: 3, len: 40 }; // Spitter's cannon socket (below its top) and barrel length
+  const LASER = { aim: 55, lock: 15, on: 4, cd: 120 }; // Spitter: tracks you for `aim` ticks, holds still for the last `lock`, then the beam hurts for `on` (short enough for a just dodge)
   const SHOULDER = 12, BARREL = 30; // art: KITE's front fist height; pistol muzzle tip
   function fire(s, from, angle, wp, team) {
     const muzzle = team === 'p' && !from.id;
@@ -308,7 +311,7 @@
       if (p && e.t > 10) e.face = dir; // tracks you, then commits
       if (e.t <= 0) {
         const aim = p ? Math.atan2((p.y + p.h / 2) - (e.y + e.h / 2), dx) : 0;
-        if (e.atk === 'lunge' || e.atk === 'sweep') { e.state = 'act'; e.t = e.atk === 'sweep' ? 60 : 26; e.hitDone = false; s.events.push({ t: 'lunge', x: e.x + e.w / 2, y: e.y + e.h / 2 }); }
+        if (e.atk === 'lunge' || e.atk === 'sweep') { e.state = 'act'; e.t = e.atk === 'sweep' ? 60 : 26; e.hitDone = false; s.events.push({ t: 'lunge', atk: e.atk, x: e.x + e.w / 2, y: e.y + e.h / 2 }); }
         else if (e.atk === 'floor' || e.atk === 'shock' || e.atk === 'storm') {
           e.state = 'act'; e.t = 80; s.events.push({ t: 'hazard', atk: e.atk });
           if (e.atk === 'storm') for (let i = 0; i < 16; i++) fire(s, e, (i / 16) * Math.PI * 2, { pellets: 1, spread: 0, speed: 4, dmg: 0 }, 'e');
@@ -328,6 +331,7 @@
             for (let i = 0; i < B.n; i++) s.bombs.push({ src: e.id, x: e.x + e.w / 2 - 10, y: e.y, w: 20, h: 20,
               vx: (rand(s) - 0.5) * 12, vy: -9 - rand(s) * 4, ground: false, hits: B.hits, need: B.hits, timer: B.time, max: B.time });
           }
+          if (e.atk === 'nova') for (const q of s.players) hit(s, q, 'nova');
           s.events.push({ t: 'battack', atk: e.atk, x: e.x + e.w / 2, y: e.y + e.h / 2 });
           e.state = 'recover'; e.t = 30;
         }
@@ -387,22 +391,42 @@
       const want = Math.abs(dx) > 300 ? dir : Math.abs(dx) < 200 ? -dir : 0;
       e.vx = want * d.speed;
       if (e.ground && dy < -60 && rand(s) < 0.015) e.vy = -11;
-      if (e.cd === 0 && e.type === 'bomber') {
+      if (e.type === 'gunner') stepLaser(s, e, dx, p);
+      else if (e.cd === 0 && e.type === 'bomber') {
         s.bombs.push({ src: e.id, x: e.x + 4, y: e.y - 10, w: 20, h: 20, vx: Math.max(-7, Math.min(7, dx / 40)), vy: -9,
           ground: false, hits: 5, need: 5, timer: 300, max: 300 });
         e.cd = 420; s.events.push({ t: 'battack', atk: 'bomb', x: e.x, y: e.y });
       } else if (e.cd === 0) {
-        const n0 = s.bullets.length, gun = e.type === 'gunner', py = e.y + GUNNER.pivot;
-        const aim = gun ? Math.atan2((p.y + p.h / 2) - py, dx) : Math.atan2(dy, dx);
-        fire(s, e, aim, { pellets: 1, spread: 0.05, speed: e.type === 'orber' ? 5 : 6, dmg: 0 }, 'e');
-        if (gun) Object.assign(s.bullets[n0], { x: e.x + e.w / 2 + Math.cos(aim) * GUNNER.len, y: py + Math.sin(aim) * GUNNER.len }); // leaves the cannon's muzzle
-        if (e.type === 'orber') s.bullets[n0].refl = true;
-        e.cd = e.type === 'orber' ? 100 : 90; s.events.push({ t: 'eshot', x: e.x, y: e.y, orb: e.type === 'orber' });
+        const n0 = s.bullets.length;
+        fire(s, e, Math.atan2(dy, dx), { pellets: 1, spread: 0.05, speed: 5, dmg: 0 }, 'e');
+        s.bullets[n0].refl = true;
+        e.cd = 100; s.events.push({ t: 'eshot', x: s.bullets[n0].x, y: s.bullets[n0].y });
       }
     }
     if (e.drop > 0) e.drop--;
     moveBody(e, e.drop > 0);
-    for (const q of s.players) if (overlap(e, q)) hit(s, q, e.type);
+    if (e.type === 'grunt') for (const q of s.players) if (overlap(e, q)) hit(s, q, e.type); // only the Cinderling burns on touch
+  }
+
+  function beamHits(x, y, a, q) { // ray from (x, y) against q, 5 px wide each side
+    let t0 = 0, t1 = 1500;
+    for (const [o, d, lo, hi] of [[x, Math.cos(a), q.x - 5, q.x + q.w + 5], [y, Math.sin(a), q.y - 5, q.y + q.h + 5]]) {
+      if (Math.abs(d) < 1e-9) { if (o < lo || o > hi) return false; continue; }
+      const m = (lo - o) / d, n = (hi - o) / d;
+      t0 = Math.max(t0, Math.min(m, n)); t1 = Math.min(t1, Math.max(m, n));
+    }
+    return t0 <= t1;
+  }
+
+  function stepLaser(s, e, dx, p) {
+    const x = e.x + e.w / 2, y = e.y + GUNNER.pivot;
+    if (e.beam > 0) { e.beam--; for (const q of s.players) if (beamHits(x, y, e.aim, q)) hit(s, q, 'laser'); return; }
+    if (e.aim === undefined || (e.cd > LASER.lock && e.cd < LASER.cd - 15)) e.aim = Math.atan2(p.y + p.h / 2 - y, dx);
+    if (e.cd <= LASER.aim) e.vx = 0;
+    if (e.cd === 0) {
+      e.beam = LASER.on; e.cd = LASER.cd;
+      s.events.push({ t: 'laser', x: x + Math.cos(e.aim) * GUNNER.len, y: y + Math.sin(e.aim) * GUNNER.len, a: e.aim });
+    }
   }
 
   function dropLoot(s, e) {
@@ -488,7 +512,7 @@
             if (e.state !== 'trans') addPosture(s, e, b.cpost || BOSS.posturePerDeflect);
           }
           else if (e.type === 'boss') damageBoss(s, e, b.dmg, 'gun');
-          else if (CFG(e)) s.events.push({ t: 'clink', x: b.x, y: b.y }); // armored: bullets bounce
+          else if (CFG(e)) { s.events.push({ t: 'clink', x: b.x, y: b.y }); addPosture(s, e, b.dmg * CFG(e).posturePerDmg); } // armored: no damage, a sliver of posture
           else { e.hp -= b.dmg; e.vx += Math.sign(b.vx) * 1.5; s.events.push({ t: 'hit', ...center(e), kind: e.type }); }
           b.life = 0;
         }
@@ -500,7 +524,7 @@
           p.parryCd = 0; // chain deflects like Sekiro
           s.events.push({ t: 'parry', x: b.x, y: b.y, deflect: true });
         }
-        if (b.team === 'e') for (const p of s.players) if (b.life > 0 && p.inv === 0 && overlap(pt, p)) { hit(s, p, 'bullet'); b.life = 0; }
+        if (b.team === 'e') for (const p of s.players) if (b.life > 0 && p.inv === 0 && overlap(pt, p)) { hit(s, p, b.refl ? 'orb' : 'ember'); b.life = 0; }
       }
     }
     s.bullets = s.bullets.filter(b => b.life > 0);
@@ -528,7 +552,7 @@
 
     for (const e of s.enemies) if (e.hp <= 0) {
       dropLoot(s, e);
-      s.events.push({ t: 'die', kind: e.type, ...center(e) });
+      s.events.push({ t: 'die', kind: e.type, id: e.id, ...center(e) });
     }
     s.enemies = s.enemies.filter(e => e.hp > 0);
 
@@ -547,7 +571,7 @@
         s.events.push({ t: 'execute', x: b.x + b.w / 2, y: b.y + b.h / 2, kind: b.type });
         if (b.type === 'boss') damageBoss(s, b, BOSS.execute, 'flat'); else b.hp = 0; // duelists die to one execute
         if (b.state === 'stagger') { b.state = 'recover'; b.t = 50; b.posture = 0; }
-        if (b.hp <= 0) { dropLoot(s, b); s.enemies = s.enemies.filter(e => e !== b); s.events.push({ t: 'die', kind: b.type, x: b.x + b.w / 2, y: b.y + b.h / 2 }); }
+        if (b.hp <= 0) { dropLoot(s, b); s.enemies = s.enemies.filter(e => e !== b); s.events.push({ t: 'die', kind: b.type, id: b.id, x: b.x + b.w / 2, y: b.y + b.h / 2 }); }
       }
       p.prevExec = !!inp.execute;
     });
@@ -555,6 +579,6 @@
     return s;
   }
 
-  const KB = { SHOULDER, BARREL, GUNNER, W, H, FLOOR_Y, PLATFORMS, WEAPONS, ENEMIES, WAVES, BOSS, DODGE, LIVES, init, step, rand, spawnBoss };
+  const KB = { SHOULDER, BARREL, GUNNER, LASER, W, H, FLOOR_Y, PLATFORMS, WEAPONS, ENEMIES, WAVES, BOSS, DODGE, LIVES, init, step, rand, spawnBoss };
   if (typeof module !== 'undefined') module.exports = KB; else root.KB = KB;
 })(this);

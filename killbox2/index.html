@@ -1,8 +1,9 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><title>KILLBOX 2</title>
+<link rel="icon" type="image/png" href="assets/out/favicon.png">
 <style>
   html, body { margin: 0; height: 100%; background: #111; overflow: hidden; }
-  canvas { display: block; margin: auto; background: #1b1d24; cursor: crosshair; }
+  canvas { display: block; margin: auto; background: #1b1d24; cursor: none; }
   #ui { position: fixed; color: #efe9dd; font-family: "Segoe UI", Arial, sans-serif; cursor: default; display: flex; align-items: center; justify-content: center; user-select: none; overflow: hidden; }
   #ui[hidden] { display: none; }
   #ui.dim { background: rgba(11,10,15,.62); }
@@ -34,12 +35,12 @@
   .note { color: #b9b0a4; font-size: .8em; margin: .6em 0; }
 </style></head>
 <body><canvas id="c" width="960" height="540"></canvas><div id="ui" hidden></div>
-<script src="sim.js"></script>
+<script src="sim.js?v=30"></script>
 <script src="assets/out/arena.js"></script>
 <script src="assets/out/mobs.js"></script>
-<script src="assets/out/boss.js"></script>
-<script src="ui.js"></script>
-<script src="fx.js"></script>
+<script src="assets/out/boss.js?v=9"></script>
+<script src="ui.js?v=30"></script>
+<script src="fx.js?v=31"></script>
 <script>
 'use strict';
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
@@ -54,7 +55,7 @@ addEventListener('keyup', e => keys[e.code] = false);
 cv.addEventListener('mousemove', e => { const r = cv.getBoundingClientRect(); mouse.x = (e.clientX - r.left) * KB.W / r.width; mouse.y = (e.clientY - r.top) * KB.H / r.height; });
 cv.addEventListener('mousedown', e => { audio(); if (mode === 'play') keys['Mouse' + e.button] = true; });
 addEventListener('mouseup', e => { keys['Mouse' + e.button] = false; });
-cv.addEventListener('contextmenu', e => e.preventDefault());
+addEventListener('contextmenu', e => e.preventDefault()); // whole page, including the bars around the canvas
 let wheel = false; cv.addEventListener('wheel', e => { if (mode === 'play') wheel = true; e.preventDefault(); }, { passive: false });
 // --- camera: close follow (metroidvania framing), leans toward the aim, wider in the boss fight, clamped to the arena.
 const ZOOM = 1.75, ZOOM_BOSS = 1.4, LOOK = 70;
@@ -69,14 +70,16 @@ function updateCam() {
   const hw = KB.W / 2 / cam.z, hh = KB.H / 2 / cam.z;
   cam.x = Math.max(hw, Math.min(KB.W - hw, cam.x)); cam.y = Math.max(hh, Math.min(KB.H - hh, cam.y));
 }
+// arrows use the colour language: an enemy winding up shows how to answer it
+function arrowCol(e) { return e.type === 'gunner' && (e.beam > 0 || e.cd <= KB.LASER.aim) ? DANGER : e.state === 'tele' && e.atk !== 'bomb' ? (e.atk === 'lunge' || e.atk === 'burst' ? GOLD : DANGER) : PAPER; }
 function offscreenArrows() { // threats outside the view get an arrow on the screen edge
-  const M = 22, things = [...s.enemies.map(e => [e.x + e.w / 2, e.y + e.h / 2, COL[e.type]]), ...s.bombs.map(k => [k.x + 10, k.y + 10, '#ff9f43'])];
-  for (const [x, y, col] of things) {
+  const M = 22, things = [...s.enemies.map(e => [e.x + e.w / 2, e.y + e.h / 2, arrowCol(e)]), ...s.bombs.map(k => [k.x + 10, k.y + 10, EMBER]), ...s.bullets.filter(b => b.team === 'e').map(b => [b.x, b.y, b.refl ? GOLD : DANGER, 0.55])];
+  for (const [x, y, col, size = 1] of things) {
     const [sx, sy] = toScreen(x, y);
     if (sx > 0 && sx < KB.W && sy > 0 && sy < KB.H) continue;
     const ex = Math.max(M, Math.min(KB.W - M, sx)), ey = Math.max(M, Math.min(KB.H - M, sy)), a = Math.atan2(sy - ey, sx - ex);
-    ctx.save(); ctx.translate(ex, ey); ctx.rotate(a); ctx.fillStyle = col; ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(-8, -9); ctx.lineTo(-8, 9); ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.restore();
+    ctx.save(); ctx.translate(ex, ey); ctx.rotate(a); ctx.scale(size, size);
+    ctx.beginPath(); for (const [u, v] of [[15, 0], [-9, -10], [-4, 0], [-9, 10]]) ctx.lineTo(u, v); ctx.closePath(); inked(col, 2); ctx.restore();
   }
 }
 function readInput(p) {
@@ -88,16 +91,16 @@ function readInput(p) {
 
 // --- audio: tiny synth blips so every action has a sound
 let ac = null;
-let masterGain = null;
-function audio() { if (!ac) { ac = new AudioContext(); masterGain = ac.createGain(); masterGain.connect(ac.destination); applyVolume(); } if (ac.state === 'suspended') ac.resume(); }
-function applyVolume() { if (masterGain) masterGain.gain.value = cfg.muted ? 0 : (cfg.volume / 100) ** 1.6; }
-function blip(f0, f1, dur, type, vol, noise) {
+let masterGain = null, musicGain = null;
+function audio() { if (!ac) { ac = new AudioContext(); masterGain = ac.createGain(); masterGain.connect(ac.createDynamicsCompressor()).connect(ac.destination); musicGain = ac.createGain(); musicGain.connect(masterGain); applyVolume(); } if (ac.state === 'suspended') ac.resume(); }
+function applyVolume() { if (!masterGain) return; masterGain.gain.value = cfg.muted ? 0 : (cfg.volume / 100) ** 1.6; musicGain.gain.value = (cfg.music / 100) ** 1.6; }
+function blip(f0, f1, dur, type, vol, noise, delay = 0, out = masterGain) {
   if (!ac) return;
-  const t = ac.currentTime, g = ac.createGain();
-  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur); g.connect(masterGain);
+  const t = ac.currentTime + delay, g = ac.createGain();
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur); g.connect(out);
   let src;
   if (noise) {
-    const b = ac.createBuffer(1, ac.sampleRate * dur, ac.sampleRate), d = b.getChannelData(0);
+    const b = ac.createBuffer(1, Math.ceil(ac.sampleRate * dur), ac.sampleRate), d = b.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     src = ac.createBufferSource(); src.buffer = b;
     const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.setValueAtTime(f0, t); f.frequency.exponentialRampToValueAtTime(f1, t + dur);
@@ -107,27 +110,90 @@ function blip(f0, f1, dur, type, vol, noise) {
   }
   src.start(t); src.stop(t + dur);
 }
+// telegraph and release sounds per attack. Family = colour: clean bells are gold (parry), harsh low tones are magenta (move).
+const bells = (...f) => f.forEach((x, i) => { blip(x, x, 0.22, 'sine', 0.28, false, i * 0.07); blip(x * 1.5, x * 1.5, 0.25, 'sine', 0.12, false, i * 0.07); });
+const horn = (f, d) => { blip(f, f * 0.92, d, 'sawtooth', 0.26); blip(f * 1.06, f, d, 'sawtooth', 0.18); };
+const TELE_SFX = {
+  lunge: () => bells(2200),
+  burst: () => bells(1400, 1760, 2100),
+  sweep: () => { horn(150, 0.4); [0, 0.12, 0.24].forEach(d => blip(1600, 300, 0.11, '', 0.4, true, d)); },
+  floor: () => { horn(65, 0.9); blip(250, 900, 0.9, '', 0.45, true); },
+  shock: () => { for (let i = 0; i < 8; i++) blip(i % 2 ? 180 : 240, 180, 0.07, 'square', 0.16, false, i * 0.08); },
+  storm: () => { horn(110, 0.7); blip(900, 300, 0.7, 'sawtooth', 0.12); },
+  spray: () => { for (let i = 0; i < 5; i++) blip(700 + i * 60, 500, 0.05, 'sawtooth', 0.16, false, i * 0.06); },
+  bomb: () => blip(250, 750, 0.35, 'triangle', 0.3),
+  nova: () => { horn(55, 1.4); blip(220, 233, 1.4, 'sawtooth', 0.14); }
+};
+const ACT_SFX = {
+  lunge: () => blip(400, 120, 0.25, '', 0.4, true),
+  sweep: () => { blip(1400, 200, 0.5, '', 0.5, true); blip(90, 60, 0.4, 'sawtooth', 0.2); },
+  burst: () => bells(1760, 1760),
+  spray: () => blip(2400, 300, 0.35, '', 0.4, true),
+  bomb: () => blip(200, 500, 0.2, 'triangle', 0.2),
+  nova: () => { blip(6000, 80, 1, '', 0.7, true); blip(140, 35, 1.1, 'sawtooth', 0.45); },
+  floor: () => blip(800, 100, 1.2, '', 0.45, true),
+  shock: () => { blip(60, 60, 1.2, 'sawtooth', 0.25); for (let i = 0; i < 6; i++) blip(5000, 2000, 0.05, '', 0.25, true, i * 0.15); },
+  storm: () => { blip(800, 100, 1.2, '', 0.4, true); blip(2400, 300, 0.4, '', 0.35, true); }
+};
+// wind-up and danger cues the sim has no event for; runs once per sim step
+let sizzleAt = -99;
+function cueStep() {
+  const p = s.players[0];
+  for (const e of s.enemies) {
+    if (e.state === 'tele' && e.atk === 'nova' && (e.t === 45 || e.t === 30 || e.t === 15)) blip(440 + (45 - e.t) * 15, 440, 0.1, 'square', 0.28); // count-in: the hit is the fourth beat
+    if (e.type === 'gunner' && e.cd === KB.LASER.aim) blip(180, 1400, KB.LASER.aim / 60, 'sawtooth', 0.14); // whine climbs to the shot
+    if (e.type === 'gunner' && e.cd === KB.LASER.lock) blip(1800, 1800, 0.06, 'square', 0.22);
+    if (e.type === 'orber' && e.cd === 24) bells(1100, 1400);
+    if (e.type === 'bomber' && e.cd === 24) blip(200, 500, 0.35, 'triangle', 0.2);
+    if (e.type === 'grunt' && rt - sizzleAt > 22 && Math.hypot(e.x + e.w / 2 - p.x - p.w / 2, e.y + e.h / 2 - p.y - p.h / 2) < 80) { sizzleAt = rt; blip(3500, 1800, 0.12, '', 0.16, true); }
+  }
+}
+// --- music: a small step sequencer that follows the fight (calm, wave, boss phase 1-3)
+// shortcut: synthesized placeholder score, replace with a recorded track once one is picked
+const RIFF = [0, -1, 0, 12, 0, -1, 3, -1, 0, -1, 0, 10, 0, 7, 3, 2], ROOTS = [0, 0, -4, -2], LEAD = [0, 7, 12, 15, 14, 12, 7, 3]; // -1 in RIFF = rest
+const hz = n => 41.2 * 2 ** (n / 12); // semitones above low E
+let mStep = 0, mNext = 0;
+function stepMusic() {
+  if (!ac || ac.state !== 'running') return;
+  const boss = s.enemies.find(e => e.type === 'boss'), level = mode !== 'play' || s.phase === 'break' || s.phase === 'clear' || s.phase === 'dead' ? 0 : boss ? 2 + boss.ph : 1;
+  const len = 60 / (level > 1 ? 138 + level * 5 : 124) / 4;
+  if (mNext < ac.currentTime) mNext = ac.currentTime + 0.05; // first note, or back from a hidden tab
+  while (mNext < ac.currentTime + 0.15) {
+    const i = mStep % 16, bar = (mStep >> 4) % 4, root = ROOTS[bar], d = mNext - ac.currentTime, M = musicGain;
+    if (i === 0) { blip(hz(root + 24), hz(root + 24), len * 15, 'triangle', 0.1, false, d, M); blip(hz(root + 31), hz(root + 31), len * 15, 'triangle', 0.07, false, d, M); }
+    if (level === 0) { if (i === 0 || i === 10) blip(hz(root), hz(root), len * 6, 'triangle', 0.3, false, d, M); }
+    else {
+      if (RIFF[i] >= 0) blip(hz(root + RIFF[i]), hz(root + RIFF[i]), len * 1.6, 'sawtooth', 0.2, false, d, M);
+      if (i % 4 === 0 || (level > 2 && i % 4 === 2)) blip(130, 40, 0.14, 'sine', 0.6, false, d, M);
+      if (i === 4 || i === 12) blip(4500, 900, 0.14, '', 0.3, true, d, M);
+      if (i % 2 === 0 || level > 3) blip(9000, 6000, 0.03, '', 0.1, true, d, M);
+      if (level > 1 && i % 2 === 0) blip(hz(root + 36 + LEAD[(i / 2 + bar * 3) % 8]), hz(root + 36 + LEAD[(i / 2 + bar * 3) % 8]), len * 1.8, 'square', level > 2 ? 0.07 : 0.045, false, d, M);
+    }
+    mStep++; mNext += len;
+  }
+}
 const SFX = {
   shot: e => e.gun === 'shotgun' ? blip(3000, 200, 0.25, '', 0.5, true) : e.gun === 'smg' ? blip(2500, 400, 0.06, '', 0.25, true) : blip(1800, 300, 0.1, '', 0.35, true),
-  eshot: () => blip(600, 300, 0.12, 'square', 0.08),
+  eshot: () => blip(1300, 1000, 0.18, 'sine', 0.2),
+  laser: () => { blip(2400, 180, 0.28, 'sawtooth', 0.28); blip(6000, 500, 0.22, '', 0.4, true); },
   hit: e => blip(e.kind === 'boss' ? 180 : 400, 80, 0.06, 'square', 0.12),
   die: e => blip(1200, 60, e.kind === 'boss' ? 1.2 : 0.3, '', 0.5, true),
   hurt: () => blip(200, 50, 0.2, 'sawtooth', 0.3),
+  land: () => blip(220, 60, 0.12, '', 0.35, true),
+  spawn: () => { blip(160, 900, 0.22, 'sawtooth', 0.12); blip(700, 4000, 0.3, '', 0.25, true); }, // tears open
   jump: () => blip(300, 600, 0.08, 'triangle', 0.15),
-  pickup: () => { blip(660, 990, 0.08, 'square', 0.12); setTimeout(() => blip(990, 1320, 0.1, 'square', 0.12), 70); },
+  pickup: e => e.kind === 'life' ? [660, 880, 1320].forEach((f, i) => blip(f, f, 0.3, 'triangle', 0.22, false, i * 0.09)) // chime
+    : e.kind === 'ammo' ? [0, 0.05, 0.11].forEach(d => blip(3800, 2600, 0.04, 'square', 0.09, false, d)) // rattle
+    : [0, 0.13].forEach(d => { blip(2600, 500, 0.07, '', 0.4, true, d); blip(320, 180, 0.07, 'square', 0.14, false, d); }), // rack
   swap: () => blip(800, 800, 0.03, 'square', 0.1),
   empty: () => blip(150, 150, 0.05, 'square', 0.15),
   wave: () => blip(220, 440, 0.4, 'sawtooth', 0.2),
   cleared: () => blip(440, 880, 0.3, 'triangle', 0.25),
   boss: () => blip(80, 40, 1.5, 'sawtooth', 0.35),
-  battack: e => e.atk === 'bomb' ? blip(200, 500, 0.2, 'triangle', 0.2) : blip(400, 100, 0.25, 'square', 0.15),
-  // telegraphs: bright "ding" = parryable, low horn = hazard (move!), click = shots incoming
-  tele: e => e.atk === 'lunge' ? (blip(2200, 2200, 0.12, 'sine', 0.3), blip(3300, 3300, 0.2, 'sine', 0.15))
-    : ['floor', 'shock', 'storm', 'sweep'].includes(e.atk) ? (blip(110, 100, 0.7, 'sawtooth', 0.3), blip(116, 104, 0.7, 'sawtooth', 0.2))
-    : blip(900, 1400, 0.1, 'square', 0.12),
-  lunge: () => blip(400, 120, 0.25, '', 0.4, true),
-  // (sweep uses the same 'lunge' event)
-  hazard: e => e.atk !== 'shock' ? blip(800, 100, 1.2, '', 0.4, true) : blip(60, 60, 1.2, 'sawtooth', 0.25),
+  battack: e => (ACT_SFX[e.atk] || (() => {}))(),
+  tele: e => TELE_SFX[e.atk](),
+  lunge: e => ACT_SFX[e.atk](), // lunge and sweep
+  hazard: e => ACT_SFX[e.atk](),
   cutin: () => { blip(400, 5000, 0.16, '', 0.5, true); blip(70, 50, 0.4, 'sawtooth', 0.35); },
   glint: () => { blip(3600, 3600, 0.25, 'sine', 0.25); blip(5400, 5400, 0.3, 'sine', 0.15); },
   execute: () => { blip(5000, 100, 0.6, '', 0.7, true); blip(90, 40, 0.9, 'sawtooth', 0.5); blip(180, 60, 0.9, 'square', 0.3); },
@@ -152,45 +218,24 @@ const SFX = {
 const GOLD = '#ffd23f', DANGER = '#ff2bd6', CYAN = '#3ff2ff', CRIMSON = '#d81b3c', PAPER = '#efe9dd', AMBER = '#ffb02e', EMBER = '#ff6a1a';
 
 // --- visual feedback (render-only, never touches sim state)
+const CAUSE = { grunt: 'CINDERLING', laser: 'SPITTER LASER', orb: 'GOLD ORB', lunge: 'LUNGE', sweep: 'SWEEP' }; // waves only: the boss is for the player to work out
 let pops = [], trail = [], parts = [], shake = 0, flash = 0, wflash = 0, banner = { text: '', t: 0 }, hitstop = 0;
 function burst(x, y, n, col, sp) { for (let i = 0; i < n; i++) { const a = Math.random() * 6.28, v = Math.random() * sp; parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 1, life: 20 + Math.random() * 20, col }); } }
-// One-time hints: the first time each rule shows up (tutorial wave), say what to do. Render-only.
-const HINTS = [
-  [e => e.t === 'tele' && e.atk === 'lunge', 'GOLD FLASH = PARRY IT  ·  [{parry}] just as it hits'],
-  [e => e.t === 'clink', 'ARMORED: bullets bounce off. Parry its lunges.'],
-  [e => e.t === 'parry' && !e.deflect, 'Parries fill its POSTURE bar. Fill it to STAGGER it.'],
-  [e => e.t === 'stagger', 'STAGGERED! Get close, [{execute}] EXECUTE before the circle empties'],
-  [e => e.t === 'eshot' && e.orb, 'GOLD ORBS: parry [{parry}] to send them back'],
-  [e => e.t === 'battack' && e.atk === 'bomb', 'BOMB: shoot it before its ring runs out, or it bursts into homing orbs'],
-  [e => e.t === 'tele' && e.atk === 'sweep', 'MAGENTA = CAN\'T PARRY: jump it, or DODGE [{dodge}] the instant it hits'],
-  [e => e.t === 'tele' && ['floor', 'shock', 'storm'].includes(e.atk), 'MAGENTA ZONE: get off it before it ignites'],
-  [e => e.t === 'perfect', 'PERFECT DODGE: your next shot is a riposte'],
-  [e => e.t === 'lifelost', 'Any hit costs a life and restarts the wave. Keep your guns from its start.']
-];
-const shown = new Set(); let hintBox = { text: '', t: 0 };
-function hint(e) { // while a floor sign is teaching, it replaces these pop-up hints (losing a life is always explained)
-  HINTS.forEach(([match, text], i) => { if (!shown.has(i) && match(e)) { shown.add(i); if (!lesson() || e.t === 'lifelost') hintBox = { text: text.replace(/\{(\w+)\}/g, (_, a) => keyLabel(a)), t: 330 }; } });
-}
 // --- tutorial: instructions stuck to the floor. Basics gate wave 1; each new enemy's sign stays until one of that type dies.
 let tut = 0; const learned = new Set();
-const LESSONS = {
-  grunt: () => ({ title: 'CINDERLING', text: `Touching it costs a life. Aim and shoot it with [${keyLabel('shoot')}].`, col: EMBER }),
-  gunner: () => ({ title: 'SPITTER', text: `Its embers can't be parried. Dodge with [${keyLabel('dodge')}] and shoot it.`, col: EMBER }),
-  orber: () => ({ title: 'LANTERN', text: `Gold orbs can be sent back. Press [${keyLabel('parry')}] as one reaches you.`, col: GOLD }),
-  bomber: () => ({ title: 'KILN', text: 'Shoot its bomb before the ring runs out, then shoot the Kiln.', col: EMBER }),
-  brute: e => e.state === 'stagger' ? { title: 'STAGGERED', text: `Get close and press [${keyLabel('execute')}] to finish it.`, col: CRIMSON }
-    : e.state === 'tele' ? { title: 'GOLD FLASH', text: `Press [${keyLabel('parry')}] just as it hits you.`, col: GOLD }
-    : e.posture > 0 ? { title: 'ANVIL', text: 'Good. Parry again to fill its posture bar.', col: GOLD }
-    : { title: 'ANVIL', text: `Bullets bounce off. Wait for the gold flash, then parry with [${keyLabel('parry')}].`, col: GOLD },
-  reaver: e => e.state === 'stagger' ? { title: 'STAGGERED', text: `Get close and press [${keyLabel('execute')}] to finish it.`, col: CRIMSON }
-    : e.state === 'tele' && e.atk === 'sweep' ? { title: "MAGENTA: CAN'T PARRY", text: `Jump over it, or dodge with [${keyLabel('dodge')}] as it hits.`, col: DANGER }
-    : e.state === 'tele' ? { title: 'GOLD FLASH', text: `Parry with [${keyLabel('parry')}] just as it hits.`, col: GOLD }
-    : { title: 'BRAND', text: 'Parry gold attacks, avoid magenta, and fill its posture bar.', col: GOLD }
+const signKey = a => `[${codeName(cfg.binds[a].find(Boolean))}]`; // the main binding only, drawn as a keycap
+const LESSONS = { // one short line each, so the sign never resizes mid-fight
+  grunt: () => ['CINDERLING', `${signKey('shoot')} before it touches you`],
+  gunner: () => ['SPITTER', `Sidestep the line or dash ${signKey('dodge')}`],
+  orber: () => ['LANTERN', `Parry the orb back ${signKey('parry')}`],
+  bomber: () => ['KILN', `Shoot the bomb ${signKey('shoot')}`],
+  brute: e => ['ANVIL', e.state === 'stagger' ? `Get close ${signKey('execute')}` : `Parry gold ${signKey('parry')}`],
+  reaver: e => ['BRAND', e.state === 'stagger' ? `Get close ${signKey('execute')}` : `Parry gold ${signKey('parry')}  Jump magenta`]
 };
 function basicsLesson() {
-  if (tut === 0) return { title: 'MOVE', text: `Run with [${keyLabel('left')}] and [${keyLabel('right')}].`, col: PAPER };
-  if (tut === 1) return { title: 'JUMP', text: `Press [${keyLabel('jump')}] twice to double jump.`, col: PAPER };
-  return { title: 'SHOOT', text: `Aim with the mouse and fire with [${keyLabel('shoot')}].`, col: PAPER };
+  if (tut === 0) return ['MOVE', `${signKey('left')} ${signKey('right')}`];
+  if (tut === 1) return ['DOUBLE JUMP', `${signKey('jump')} twice`];
+  return ['SHOOT', signKey('shoot')];
 }
 function lesson() {
   if (!cfg.tutorial || !s) return null;
@@ -206,12 +251,19 @@ function stepTutorial() {
 function drawFloorSign() { // sticks to the floor, and stays on screen if the camera climbs above it
   const L = lesson();
   if (!L) return;
-  ctx.font = FONT_B(15); const tw = ctx.measureText(L.text).width;
-  ctx.font = FONT_D(14); const w = Math.max(tw, ctx.measureText(L.title).width) + 44, ht = 46;
-  const x = (KB.W - w) / 2, y = Math.min(KB.H - ht - 6, toScreen(0, KB.FLOOR_Y)[1] + 10);
-  plate(x, y, w, ht); ctx.fillStyle = L.col; ctx.fillRect(x + 2, y + 6, 4, ht - 12);
-  ctx.font = FONT_D(14); ctx.fillText(L.title, x + 20, y + 18);
-  ctx.font = FONT_B(15); ctx.fillStyle = PAPER; ctx.fillText(L.text, x + 20, y + 37);
+  const [title, text] = L, bits = text.split(/(\[[^\]]+\])/).filter(Boolean);
+  ctx.font = FONT_D(14); const nw = ctx.measureText(title).width;
+  ctx.font = FONT_B(13); const widths = bits.map(q => q[0] === '[' ? ctx.measureText(q.slice(1, -1)).width + 14 : ctx.measureText(q).width);
+  const w = nw + widths.reduce((m, n) => m + n, 0) + 50, ht = 28, y = Math.min(KB.H - ht - 6, toScreen(0, KB.FLOOR_Y)[1] + 26);
+  let x = (KB.W - w) / 2;
+  plate(x, y, w, ht);
+  ctx.font = FONT_D(14); ctx.fillStyle = PAPER; ctx.fillText(title, x + 16, y + 19); x += nw + 34;
+  ctx.font = FONT_B(13);
+  bits.forEach((q, i) => {
+    if (q[0] === '[') { chamfer(x, y + 5, widths[i], 18, 3); ctx.fillStyle = PAPER; ctx.fill(); ctx.fillStyle = INK; ctx.fillText(q.slice(1, -1), x + 7, y + 18.5); }
+    else { ctx.fillStyle = '#cfc6b8'; ctx.fillText(q, x, y + 18.5); }
+    x += widths[i];
+  });
 }
 // one-shot body animations (frame lengths in ticks), started from sim events
 const ONE = { parry_hit: [6, 12], perfect: [10], execute: [6, 6, 8, 10], hurt: [6, 20], respawn: [10, 10], flip: [4, 4, 5], land: [6] };
@@ -235,23 +287,22 @@ function react(e) {
   fxEvent(e);
   (SFX[e.t] || (() => {}))(e);
   if (e.t === 'shot') shake = Math.max(shake, e.gun === 'shotgun' ? 6 : 2);
-  if (e.t === 'die') { if (e.kind === 'boss') { burst(e.x, e.y, 60, INK, 9); burst(e.x, e.y, 60, EMBER, 9); } else { burst(e.x, e.y, 22, '#2b2326', 5); burst(e.x, e.y, 14, EMBER, 5); burst(e.x, e.y, 6, AMBER, 3); } shake = e.kind === 'boss' ? 25 : 8; hitstop = Math.max(hitstop, e.kind === 'boss' ? 30 : 3); }
+  if (e.t === 'die') { if (e.kind === 'boss') { burst(e.x, e.y, 60, INK, 9); burst(e.x, e.y, 60, EMBER, 9); } shake = e.kind === 'boss' ? 25 : 8; hitstop = Math.max(hitstop, e.kind === 'boss' ? 30 : 3); }
   if (e.t === 'hurt') { flash = 14; shake = 14; hitstop = 20; burst(e.x, e.y, 18, INK, 6); burst(e.x, e.y, 12, CRIMSON, 6); }
-  if (e.t === 'lifelost') banner = { text: (e.boss ? 'PHASE RESTART' : 'WAVE RESTART') + ' · ' + e.left + ' left', t: 90 };
+  if (e.t === 'lifelost') banner = { text: (e.boss ? 'PHASE RESTART' : 'WAVE RESTART') + ' · ' + e.left + ' left', t: 120, sub: e.boss ? '' : CAUSE[e.cause] };
   if (e.t === 'parry') { shake = 12; hitstop = 10; burst(e.x, e.y, 14, GOLD, 7); burst(e.x, e.y, 8, PAPER, 5); }
   if (e.t === 'stagger') { banner = { text: 'STAGGER', t: 70 }; shake = 18; hitstop = 14; burst(e.x, e.y, 20, PAPER, 6); if (s.enemies.some(b => b.type === 'boss' && b.state === 'stagger')) startBand(3, 34); }
   if (e.t === 'phase') { banner = { text: 'PHASE ' + e.n, t: 120 }; shake = 25; hitstop = 30; wflash = 10; burst(e.x, e.y, 80, EMBER, 9); startBand(e.n - 1, 56); }
   if (e.t === 'boom') { shake = 14; wflash = 3; [EMBER, GOLD, AMBER, PAPER].forEach(c => burst(e.x, e.y, 9, c, 8)); }
   if (e.t === 'perfect') { hitstop = 12; wflash = 4; burst(e.x, e.y, 25, GOLD, 5); pops.push({ x: e.x, y: e.y - 30, t: 45, text: 'PERFECT', col: GOLD }); }
   if (e.t === 'execute') { hitstop = cutin ? cutin.end - cutin.shot : 28; shake = 30; burst(e.x, e.y, 40, PAPER, 10); burst(e.x, e.y, 30, CRIMSON, 8); pops.push({ x: e.x, y: e.y - 60, t: 60, text: 'EXECUTED', col: CRIMSON }); }
-  hint(e);
   if (e.t === 'riposte') { shake = 8; burst(e.x, e.y, 15, CYAN, 4); }
   if (e.t === 'defuse') burst(e.x, e.y, 25, CYAN, 5);
   if (e.t === 'bombhit') burst(e.x, e.y, 3, AMBER, 2);
   if (e.t === 'hazard') shake = 10;
-  if (e.t === 'pickup') burst(e.x + 9, e.y + 9, 12, '#7cf29c', 3);
-  if (e.t === 'spawn') burst(e.x + 12, e.y + 16, 14, '#b388ff', 3);
+  if (e.t === 'pickup') { burst(e.x + 9, e.y + 9, 8, CRIMSON, 3); burst(e.x + 9, e.y + 9, 6, PAPER, 3); }
   if (e.t === 'battack' && e.atk === 'spray') shake = 8;
+  if (e.t === 'battack' && e.atk === 'nova') { shake = 22; wflash = 8; }
   if (e.t === 'wave') banner = { text: 'WAVE ' + e.n, t: 90 };
   if (e.t === 'cleared') banner = { text: 'WAVE CLEAR', t: 90 };
   if (e.t === 'boss') { banner = { text: 'VULKARN', t: 120 }; shake = 15; startBand(0, 60); }
@@ -260,13 +311,14 @@ function react(e) {
 }
 
 let s, endAt = 0, bossDeath = null, bossAnim = null;
-function restart() { s = KB.init((Date.now() & 0x7fffffff)); parts = []; fxClear(); pops = []; trail = []; banner = { text: '', t: 0 }; hintBox = { text: '', t: 0 }; one = null; hitstop = 0; shake = 0; flash = 0; wflash = 0; endAt = 0; bossDeath = null; bossAnim = null; tut = 0; learned.clear(); shown.clear(); }
+function restart() { s = KB.init((Date.now() & 0x7fffffff)); parts = []; fxClear(); pops = []; trail = []; banner = { text: '', t: 0 }; one = null; hitstop = 0; shake = 0; flash = 0; wflash = 0; endAt = 0; bossDeath = null; bossAnim = null; tut = 0; learned.clear(); }
 restart();
 
 // --- fixed 60 Hz sim, render every frame
 let acc = 0, last = performance.now();
 function frame(now) {
   const dt = Math.min(100, now - last); last = now;
+  stepMusic();
   if (mode !== 'play') { acc = 0; if (mode === 'menu') drawMenu(); else if (dirty) { draw(); dirty = false; } requestAnimationFrame(frame); return; }
   acc += dt;
   while (acc >= 1000 / 60) {
@@ -277,7 +329,9 @@ function frame(now) {
     else { stepTutorial(); inp = readInput(s.players[0]); if (startCutin(inp)) continue; }
     KB.step(s, [inp]);
     s.events.forEach(react);
+    cueStep();
     const q = s.players[0];
+    if (q.ground && !wasGround && wasVy > 5) { fxAdd('puff', q.x + q.w / 2, q.y + q.h, { r: 14 + wasVy }); SFX.land(); }
     if (q.ground && !wasGround && wasVy > 5 && !one && !q.dodge) play('land');
     wasGround = q.ground; wasVy = q.vy;
   }
@@ -288,7 +342,7 @@ requestAnimationFrame(frame);
 
 // --- KITE sprites (assets/out/kite_*.png, built by assets/src/slice_kite_sheets.py). 384 px cells, feet at row 344.
 const SPR = 0.1875, CELL = 384, FOOT_ROW = 344, IMG = {};
-for (const n of ['idle', 'run', 'air', 'dodge', 'perfect', 'parry', 'parry_hit', 'execute', 'hurt', 'respawn', 'victory', 'gun']) { const i = new Image(); i.src = 'assets/out/kite_' + n + '.png'; IMG[n] = i; }
+for (const n of ['idle', 'run', 'air', 'dodge', 'perfect', 'parry', 'parry_hit', 'execute', 'hurt', 'respawn', 'victory', 'gun']) { const i = new Image(); i.src = 'assets/out/kite_' + n + '.png?v=5'; IMG[n] = i; }
 const ready = n => IMG[n].complete && IMG[n].naturalWidth > 0;
 const AIR = { flip: [3, 4, 5], land: [7] }; // frames of the shared air strip
 function sprite(name, f, x, feetY, flip) { // draw frame f of a strip, feet at (x, feetY)
@@ -334,10 +388,13 @@ function drawPlayer(p) {
       sprite('run', back ? 5 - i : i, x, feet, flip);
     } else sprite('idle', (rt / 10 | 0) % 4, x, feet, flip);
   }
-  if (gun && ready('gun')) { // pistol only: the body frames already show both fists. Muzzle tip lands on KB.BARREL.
-    const G = 0.1875, kick = Math.max(0, 5 - (rt - lastShot)) * 0.6, gw = IMG.gun.naturalWidth * G, gh = IMG.gun.naturalHeight * G;
-    ctx.save(); ctx.translate(x, p.y + KB.SHOULDER); ctx.rotate(p.aim); if (aimLeft) ctx.scale(1, -1);
-    ctx.drawImage(IMG.gun, KB.BARREL - gw - kick, -gh * 0.32, gw, gh); ctx.restore();
+  if (gun) { // the body frames already show both fists
+    const H = heldGun(p);
+    if (H) {
+      const kick = Math.max(0, 5 - (rt - lastShot)) * H.kick, gh = H.w * H.im.naturalHeight / H.im.naturalWidth;
+      ctx.save(); ctx.translate(x, p.y + KB.SHOULDER); ctx.rotate(p.aim); if (aimLeft) ctx.scale(1, -1);
+      ctx.drawImage(H.im, H.tip - H.w - kick, -gh * H.bore, H.w, gh); ctx.restore();
+    }
   }
   return true;
 }
@@ -389,11 +446,11 @@ function drawForeground() { // screen-space silhouettes, kept faint so they neve
 // --- enemy sprites (assets/out/mob_*, built by assets/src/build_mobs.py). Pose comes from the sim state; motion is code.
 const MOB_IMG = {}, MOB_TINT = {};
 for (const n of Object.keys(MOBS)) { const i = new Image(); i.src = 'assets/out/mob_' + n + '.webp'; MOB_IMG[n] = i; }
-function mobTint(n, col) { // the strip washed with a telegraph colour, keeping its ink detail visible
-  const k = n + col, im = MOB_IMG[n];
+function mobTint(n, col, alpha = 0.72) { // the strip washed with a telegraph colour, keeping its ink detail visible
+  const k = n + col + alpha, im = MOB_IMG[n];
   if (MOB_TINT[k]) return MOB_TINT[k];
   const c = document.createElement('canvas'); c.width = im.naturalWidth; c.height = im.naturalHeight;
-  const x = c.getContext('2d'); x.drawImage(im, 0, 0); x.globalCompositeOperation = 'source-atop'; x.globalAlpha = 0.72; x.fillStyle = col; x.fillRect(0, 0, c.width, c.height);
+  const x = c.getContext('2d'); x.drawImage(im, 0, 0); x.globalCompositeOperation = 'source-atop'; x.globalAlpha = alpha; x.fillStyle = col; x.fillRect(0, 0, c.width, c.height);
   return MOB_TINT[k] = c;
 }
 const mobHit = new WeakMap(), BARREL_IMG = new Image(); BARREL_IMG.src = 'assets/out/mob_gunner_barrel.webp';
@@ -414,6 +471,7 @@ function drawMob(e, pulse) {
   if (!M || !im || !im.complete || !im.naturalWidth) return false;
   const P = s.players[0], duel = e.type === 'brute' || e.type === 'reaver', dx = P.x + P.w / 2 - e.x - e.w / 2, dy = P.y + P.h / 2 - e.y - e.h / 2;
   const f = mobPose(e, Math.hypot(dx, dy) < 90), S = 1 / M.scale, phase = rt / 9 + e.id * 1.7, face = duel ? e.face : (dx < 0 ? -1 : 1);
+  mobLast.set(e.id, { f, face });
   let sx = 1, sy = 1 + Math.sin(phase) * 0.025, tilt = 0, ox = 0, oy = 0;
   if (duel) {
     if (e.state === 'idle' && Math.abs(e.vx) > 0.4) { tilt = Math.sin(rt / (e.type === 'brute' ? 7 : 3)) * (e.type === 'brute' ? 0.07 : 0.05); sy = 1 + Math.abs(Math.sin(rt / 7)) * 0.04; }
@@ -427,23 +485,28 @@ function drawMob(e, pulse) {
   else if (Math.abs(e.vx) > 0.2) tilt = Math.sin(rt / 5) * (e.type === 'bomber' ? 0.11 : 0.05); // waddle / scuttle
   if (!e.ground && e.type !== 'orber') { sx = 0.94; sy = 1.06; }
   const tele = duel && e.state === 'tele' && pulse ? (e.atk === 'sweep' ? DANGER : e.atk === 'lunge' ? GOLD : null) : null;
-  const hurt = rt - (mobHit.has(e) ? mobHit.get(e) : -99) < 5, wash = tele || (hurt ? PAPER : null);
+  const hurt = rt - (mobHit.has(e) ? mobHit.get(e) : -99) < 5, wash = tele || (hurt ? PAPER : null), rimCol = cfg.outlines && (tele || (e.type === 'grunt' ? DANGER : null));
   if (e.type === 'gunner' && BARREL_IMG.complete && BARREL_IMG.naturalWidth) { // cannon rotates from its socket, behind the shell
-    const B = M.barrel, a = Math.atan2(P.y + P.h / 2 - e.y - KB.GUNNER.pivot, dx), kick = e.cd > 80 ? (e.cd - 80) * 0.7 : 0;
+    const B = M.barrel, a = e.aim ?? Math.atan2(dy, dx), kick = Math.max(0, e.cd - KB.LASER.cd + 12) * 0.7;
     ctx.save(); ctx.translate(e.x + e.w / 2, e.y + KB.GUNNER.pivot); ctx.rotate(a); if (Math.cos(a) < 0) ctx.scale(1, -1);
     ctx.drawImage(BARREL_IMG, -B.px * S - kick, -B.py * S, B.w * S, B.h * S); ctx.restore();
   }
   ctx.save(); ctx.translate(e.x + e.w / 2 + ox, e.y + e.h + oy); if (face < 0) ctx.scale(-1, 1); ctx.rotate(tilt); ctx.scale(sx, sy);
-  ctx.drawImage(wash ? mobTint(e.type, wash) : im, f * M.w, 0, M.w, M.h, -M.w * S / 2, -M.foot * S, M.w * S, M.h * S);
+  if (rimCol) { // Cinderling: magenta rim = touching it hurts, brighter as you get close. Duelists: telegraph rim
+    const rim = mobTint(e.type, rimCol, 1), r = 1.8 + 0.5 * Math.sin(rt / 6); ctx.globalAlpha = duel || Math.hypot(dx, dy) < 110 ? 1 : 0.6;
+    for (const [a, b] of [[r, 0], [-r, 0], [0, r], [0, -r]]) ctx.drawImage(rim, f * M.w, 0, M.w, M.h, -M.w * S / 2 + a, -M.foot * S + b, M.w * S, M.h * S);
+    ctx.globalAlpha = 1;
+  }
+  ctx.drawImage(wash ? mobTint(e.type, wash, tele && cfg.outlines ? 0.22 : 0.72) : im, f * M.w, 0, M.w, M.h, -M.w * S / 2, -M.foot * S, M.w * S, M.h * S);
   ctx.restore();
   return true;
 }
 // --- VULKARN (assets/out/boss_p*.webp, built by assets/src/build_boss.py): 16 poses per phase in a 4x4 grid (bump ?v when the grid changes: a cached old sheet draws an invisible boss)
-const BOSS_IMG = [1, 2, 3].map(n => { const i = new Image(); i.src = `assets/out/boss_p${n}.webp?v=2`; return i; });
+const BOSS_IMG = [1, 2, 3].map(n => { const i = new Image(); i.src = `assets/out/boss_p${n}.webp?v=9`; return i; });
 const bossWash = document.createElement('canvas'); let bossLast = { face: 1, ph: 0 };
-const B_TELE = { lunge: 1, sweep: 4, floor: 6, shock: 6, storm: 6, burst: 1, spray: 10, bomb: 8 };
+const B_TELE = { lunge: 1, sweep: 4, floor: 6, shock: 6, storm: 6, burst: 1, spray: 10, bomb: 8, nova: 10 };
 const B_ACT = { lunge: 2, sweep: 5, floor: 7, storm: 7, shock: 6 };
-const B_RECOVER = { burst: 2, spray: 10, bomb: 8 };
+const B_RECOVER = { burst: 2, spray: 10, bomb: 8, nova: 7 };
 function bossPose(e) { // 0 idle, 1 thrust wind-up, 2 thrust, 3 recover, 4 sweep wind-up, 5 sweep, 6 overhead, 7 slam, 8 tear core, 9 stagger, 10 roar, 11 death, 12 stride, 13 passing step, 14 jump, 15 landing
   if (e.state === 'stagger') return 9;
   if (e.state === 'trans') return 10;
@@ -455,13 +518,15 @@ function bossPose(e) { // 0 idle, 1 thrust wind-up, 2 thrust, 3 recover, 4 sweep
 function blitBoss(ph, f, x, feet, face, wash, sx = 1, sy = 1, tilt = 0) {
   const A = BOSS_ART, im = BOSS_IMG[ph], S = 1 / A.scale, fx = (f % 4) * A.w, fy = (f / 4 | 0) * A.h;
   let src = im, ox = fx, oy = fy;
-  if (wash) { // tint just this frame: gold = parry, magenta = danger, paper = hit
+  const tele = wash === DANGER || wash === GOLD, rim = tele && cfg.outlines;
+  const tint = alpha => { // tint just this frame: gold = parry, magenta = danger, paper = hit
     bossWash.width = A.w; bossWash.height = A.h;
     const c = bossWash.getContext('2d'); c.drawImage(im, fx, fy, A.w, A.h, 0, 0, A.w, A.h);
-    c.globalCompositeOperation = 'source-atop'; c.globalAlpha = 0.68; c.fillStyle = wash; c.fillRect(0, 0, A.w, A.h);
-    src = bossWash; ox = 0; oy = 0;
-  }
+    c.globalCompositeOperation = 'source-atop'; c.globalAlpha = alpha; c.fillStyle = wash; c.fillRect(0, 0, A.w, A.h);
+  };
   ctx.save(); ctx.translate(x, feet); if (face < 0) ctx.scale(-1, 1); ctx.rotate(tilt); ctx.scale(sx, sy);
+  if (rim) { tint(1); for (const [a, b] of [[2, 0], [-2, 0], [0, 2], [0, -2]]) ctx.drawImage(bossWash, 0, 0, A.w, A.h, -A.w * S / 2 + a, -A.foot * S + b, A.w * S, A.h * S); } // the signal sits in the rim, the ink stays black
+  if (wash) { tint(rim ? 0.2 : 0.6); src = bossWash; ox = 0; oy = 0; }
   ctx.drawImage(src, ox, oy, A.w, A.h, -A.w * S / 2, -A.foot * S, A.w * S, A.h * S); ctx.restore();
 }
 function drawBoss(e, pulse) { // weight comes from code: stomping stride, eased poses, wind-up pull-back, landing impact, lunge afterimages
@@ -490,9 +555,10 @@ function drawBoss(e, pulse) { // weight comes from code: stomping stride, eased 
     const charge = 1 - Math.min(1, e.t / 30);
     ox = -e.face * 7 * charge + (e.t < 14 ? (rt % 4 < 2 ? -1.4 : 1.4) : 0); sx = 0.97; sy = 1.03; tilt = -0.035 * charge;
   }
-  if (e.state === 'act' && (e.atk === 'lunge' || e.atk === 'sweep')) { sx = 1.08; sy = 0.94; tilt = 0.05; }
+  if (e.state === 'act' && e.atk === 'lunge') { sx = 1.08; sy = 0.94; tilt = 0.05; }
+  if (e.state === 'act' && e.atk === 'sweep') { if (e.ph < 2) { sx = 1.12; sy = 0.8; tilt = 0.09; } else { sx = 1.04; sy = 0.86; tilt = 0.02; } } // scythes low along the floor, unlike the thrust; phase 3 has its own low art
   if (e.state === 'act' && e.atk !== 'lunge' && e.atk !== 'sweep') { sy = 0.97 + Math.sin(rt / 3) * 0.008; }
-  if (e.state === 'recover') { sx = 1.02; sy = 0.96; tilt = 0.04; }
+  if (e.state === 'recover') { sx = 1.02; sy = 0.96; tilt = e.ph < 2 ? 0.04 : 0; }
   if (e.state === 'stagger') { tilt = Math.sin(rt / 18) * 0.03; sy = 0.98; }
   if (e.state === 'trans') { sy = 1.02 + Math.sin(rt / 3) * 0.015; ox = rt % 6 < 3 ? -1 : 1; }
   if (!e.ground) { sx = 0.96; sy = 1.05; tilt = Math.max(-0.1, Math.min(0.1, e.vy * 0.008)); }
@@ -500,12 +566,12 @@ function drawBoss(e, pulse) { // weight comes from code: stomping stride, eased 
   if (sinceLand < 12) { const k = 1 - sinceLand / 12; sy -= 0.13 * k; sx += 0.09 * k; }
   const ease = 1 - Math.pow(0.68, dt); // poses settle instead of snapping
   A.sx += (sx - A.sx) * ease; A.sy += (sy - A.sy) * ease; A.tilt += (tilt - A.tilt) * ease; A.ox += (ox - A.ox) * ease; A.oy += (oy - A.oy) * ease;
-  if (e.state === 'act' && (e.atk === 'lunge' || e.atk === 'sweep') && dt && rt % 3 === 0) { A.trail.push({ x: cx + A.ox, feet: feet + A.oy, face: e.face, f, ph, at: rt }); if (A.trail.length > 4) A.trail.shift(); }
+  if (cfg.motionBlur && e.state === 'act' && (e.atk === 'lunge' || e.atk === 'sweep') && dt && rt % 3 === 0) { A.trail.push({ x: cx + A.ox, feet: feet + A.oy, face: e.face, f, ph, at: rt }); if (A.trail.length > 4) A.trail.shift(); }
   A.trail = A.trail.filter(g => rt - g.at < 14);
   for (const g of A.trail) { ctx.save(); ctx.globalAlpha *= 0.34 * (1 - (rt - g.at) / 14); blitBoss(g.ph, g.f, g.x, g.feet, g.face, EMBER, A.sx, A.sy, A.tilt); ctx.restore(); }
   const age = rt - A.prevAt;
-  if (age < 6) { ctx.save(); ctx.globalAlpha *= 0.42 * (1 - age / 6); blitBoss(ph, A.prev, cx + A.ox, feet + A.oy, e.face, null, A.sx, A.sy, A.tilt); ctx.restore(); }
-  const danger = ['sweep', 'floor', 'shock', 'storm'].includes(e.atk), parry = e.atk === 'lunge' || e.atk === 'burst';
+  if (cfg.motionBlur && age < 6) { ctx.save(); ctx.globalAlpha *= 0.42 * (1 - age / 6); blitBoss(ph, A.prev, cx + A.ox, feet + A.oy, e.face, null, A.sx, A.sy, A.tilt); ctx.restore(); }
+  const danger = ['sweep', 'floor', 'shock', 'storm', 'nova'].includes(e.atk), parry = e.atk === 'lunge' || e.atk === 'burst';
   const tele = e.state === 'tele' && pulse ? (danger ? DANGER : parry ? GOLD : null) : null;
   const hurt = rt - (mobHit.has(e) ? mobHit.get(e) : -99) < 4;
   blitBoss(ph, f, cx + A.ox, feet + A.oy, e.face, tele || (hurt ? PAPER : null), A.sx, A.sy, A.tilt);
@@ -570,7 +636,32 @@ function drawMenu() { // title-screen scene: the whole arena with KITE standing 
   ctx.fillStyle = g; ctx.fillRect(0, 0, 620, KB.H);
   ctx.save(); ctx.translate(690, KB.FLOOR_Y); ctx.scale(2.7, 2.7); sprite('idle', (performance.now() / 167 | 0) % 4, 0, 0, true); ctx.restore();
 }
-const COL = { grunt: '#e05a47', gunner: '#e0a347', orber: '#3fb7c9', bomber: '#9a9a3a', brute: '#7b8794', reaver: '#b0343c', boss: '#ff6a1a' }, PICK = { smg: '#4dd2ff', shotgun: '#ff9f43', ammo: '#efe9dd', life: '#4d9fff' };
+// --- pickups and KITE's other guns (assets/out/pick_*.webp, built by assets/src/build_pickups.py)
+const PICK_IMG = {}, PICK_W = { smg: 36, shotgun: 40, ammo: 24, life: 22 };
+for (const n of Object.keys(PICK_W)) { const i = new Image(); i.src = 'assets/out/pick_' + n + '.webp?v=5'; PICK_IMG[n] = i; }
+// w = drawn length, tip = muzzle distance from the shoulder, bore = barrel height as a share of the art. Bullets still start at KB.BARREL for every gun, so point-blank shots can't skip a target.
+const HELD = { pistol: { w: 21.4, tip: 26, bore: 0.32, kick: 0.6 }, smg: { w: 36, tip: 41, bore: 0.23, kick: 0.6 }, shotgun: { w: 42, tip: 45, bore: 0.24, kick: 1.8 } };
+function heldGun(p) {
+  const id = p.guns[p.cur].id, im = id === 'pistol' ? IMG.gun : PICK_IMG[id];
+  return im.complete && im.naturalWidth ? { ...HELD[id], im } : null;
+}
+function drawPickup(k) {
+  const im = PICK_IMG[k.kind], w = PICK_W[k.kind], cx = k.x + k.w / 2, feet = k.y + k.h;
+  if (!im.complete || !im.naturalWidth) { ctx.fillStyle = PAPER; ctx.fillRect(k.x, k.y, k.w, k.h); return; }
+  const h = w * im.naturalHeight / im.naturalWidth, bob = k.ground ? Math.sin((rt + k.x * 3) / 14) * 2.5 - 4 : 0, y = feet - h + bob;
+  ctx.save();
+  if (k.life < 180 && (k.life >> 3) % 2) ctx.globalAlpha = 0.3; // about to vanish
+  if (k.ground) { // light beam and floor shadow: loot, not scenery
+    const g = ctx.createLinearGradient(0, feet, 0, feet - 74); g.addColorStop(0, CRIMSON + '99'); g.addColorStop(1, CRIMSON + '00');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(cx - 13, feet); ctx.lineTo(cx - 8, feet - 74); ctx.lineTo(cx + 8, feet - 74); ctx.lineTo(cx + 13, feet); ctx.fill();
+    ctx.fillStyle = INK; ctx.globalAlpha *= 0.55; ctx.beginPath(); ctx.ellipse(cx, feet, w * 0.4, 2.5, 0, 0, 7); ctx.fill(); ctx.globalAlpha /= 0.55;
+  }
+  ctx.drawImage(im, cx - w / 2, y, w, h);
+  const t = ((rt + k.x * 7) % 90) / 14; // glint every 1.5 s
+  if (t < 1) { ctx.translate(cx + w * 0.3, y + h * 0.2); const L = 7 * Math.sin(t * Math.PI); dartPath(-L, L, 1.8); inked(PAPER, 0.5); ctx.rotate(Math.PI / 2); dartPath(-L, L, 1.8); inked(PAPER, 0.5); }
+  ctx.restore();
+}
+const COL = { grunt: '#e05a47', gunner: '#e0a347', orber: '#3fb7c9', bomber: '#9a9a3a', brute: '#7b8794', reaver: '#b0343c', boss: '#ff6a1a' };
 function draw() {
   ctx.setTransform(RS, 0, 0, RS, 0, 0);
   updateCam();
@@ -598,44 +689,40 @@ function draw() {
     }
   }
   drawBand(); drawCutin();
+  drawNovaDark(boss); drawFx(true);
   for (const k of s.bombs) drawBomb(k, pulse);
 
-  for (const k of s.pickups) { ctx.fillStyle = PICK[k.kind]; ctx.globalAlpha = k.life < 120 && (k.life >> 3) % 2 ? 0.3 : 1; ctx.fillRect(k.x, k.y, k.w, k.h); ctx.globalAlpha = 1; ctx.fillStyle = '#000'; ctx.font = FONT_B(11); ctx.fillText(k.kind[0].toUpperCase(), k.x + 5, k.y + 13); }
+  for (const k of s.pickups) drawPickup(k);
+  for (const e of s.enemies) { if (e.type === 'gunner') drawLaserAim(e); if (e.state === 'tele' && e.atk === 'sweep') drawSweepArc(e); if (novaTele(e)) drawNovaPulse(e); }
   for (const e of s.enemies) {
     let col = COL[e.type];
     const duel = e.type === 'boss' || e.type === 'brute' || e.type === 'reaver';
     if (duel) {
       if (e.state === 'tele' && (e.atk === 'lunge' || e.atk === 'burst')) col = pulse ? GOLD : col; // gold = parry it
-      else if (e.state === 'tele' && ['floor', 'shock', 'storm', 'sweep'].includes(e.atk)) col = pulse ? DANGER : '#7a1f6c'; // magenta = move
+      else if (e.state === 'tele' && ['floor', 'shock', 'storm', 'sweep', 'nova'].includes(e.atk)) col = pulse ? DANGER : '#7a1f6c'; // magenta = move
       else if (e.state === 'stagger') col = '#6b5a7a';
       else if (e.state === 'trans') col = pulse ? COL[e.type] : '#555';
     }
     const art = e.type === 'boss' ? drawBoss(e, pulse) : drawMob(e, pulse);
     if (!art) { ctx.fillStyle = col; ctx.fillRect(e.x, e.y, e.w, e.h); }
     if (!duel && e.hp < e.max) miniBar(e.x - 2, e.y - 10, e.w + 4, e.hp / e.max, EMBER);
-    if (e.type === 'orber') { ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(e.x + e.w / 2, e.y + 10, 5, 0, 7); ctx.fill(); }
-    if (e.type === 'bomber') { ctx.fillStyle = '#2a2a2a'; ctx.beginPath(); ctx.arc(e.x + e.w / 2, e.y - 6, 7, 0, 7); ctx.fill(); }
     if (duel) {
       if (!art) {
         ctx.fillStyle = e.state === 'stagger' ? '#888' : '#fff';
         const ex = e.face * e.w * 0.12, ew = e.w * 0.18;
         ctx.fillRect(e.x + e.w * 0.18 + ex, e.y + e.h * 0.22, ew, ew * 0.7); ctx.fillRect(e.x + e.w * 0.64 + ex, e.y + e.h * 0.22, ew, ew * 0.7);
       }
-      const barY = e.y - (art ? 20 : 8);
+      const low = e.type === 'reaver' && e.atk === 'sweep' && (e.state === 'tele' || e.state === 'act') ? 20 : 0; // its crouch is shorter
+      const barY = e.y - (art ? 20 : 8) + low;
       if (e.type !== 'boss' && e.posture > 0) { // duelists show posture over their head (boss uses the HUD bar)
         miniBar(e.x - 6, barY, e.w + 12, e.posture / KB.BOSS.postureMax, e.state === 'stagger' && pulse ? PAPER : CRIMSON);
       }
       if (e.state === 'stagger' && !cutin && !bandOn()) {
         const pl = s.players[0], near = Math.hypot(e.x + e.w / 2 - pl.x - pl.w / 2, e.y + e.h / 2 - pl.y - pl.h / 2) <= KB.BOSS.executeRange;
-        ctx.textAlign = 'center'; label(near ? `[${keyLabel('execute')}] EXECUTE` : 'GET CLOSE', e.x + e.w / 2, barY - 6, FONT_D(18), near ? (pulse ? CRIMSON : PAPER) : '#b9b0a4', 4); ctx.textAlign = 'left';
-        // stagger timer: the execute circle is a pie that empties clockwise as the stagger runs out
-        const cx = e.x + e.w / 2, cy = e.y + e.h / 2, f = Math.max(0, e.t) / KB.BOSS.stagger, a0 = -Math.PI / 2;
-        ctx.fillStyle = CRIMSON + (f < 0.25 && pulse ? '44' : '22');
-        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, KB.BOSS.executeRange, a0, a0 + f * Math.PI * 2); ctx.closePath(); ctx.fill();
-        ctx.strokeStyle = CRIMSON; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(cx, cy, KB.BOSS.executeRange, a0, a0 + f * Math.PI * 2); ctx.stroke();
-        ctx.strokeStyle = CRIMSON + '55'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(cx, cy, KB.BOSS.executeRange, 0, 7); ctx.stroke();
+        if (e.type !== 'boss' && near) { ctx.textAlign = 'center'; label(`[${keyLabel('execute')}]`, e.x + e.w / 2, barY - 6, FONT_D(18), pulse ? CRIMSON : PAPER, 4); ctx.textAlign = 'left'; }
+        drawExecuteCircle(e, near, pulse);
       }
-      if (e.state === 'tele' && ['lunge', 'burst', 'sweep'].includes(e.atk)) { ctx.textAlign = 'center'; label('!', e.x + e.w / 2, e.y - (e.type === 'boss' && art ? 34 : 12), FONT_D(42), ['lunge', 'burst'].includes(e.atk) ? GOLD : DANGER, 5); ctx.textAlign = 'left'; }
+      if (e.state === 'tele' && ['lunge', 'burst', 'sweep', 'nova'].includes(e.atk)) drawAlert(e.x + e.w / 2, e.y - (e.type === 'boss' && art ? 34 : 30) + low, ['lunge', 'burst'].includes(e.atk) ? GOLD : DANGER);
       if (e.state === 'act' && e.atk === 'sweep') { ctx.fillStyle = DANGER + (art ? 'cc' : '88'); const th = art ? 3 : 26; ctx.fillRect(e.face > 0 ? e.x - 60 : e.x + e.w, KB.FLOOR_Y - th, 60, th); }
       if (!art && e.state === 'act' && e.atk === 'lunge') { ctx.fillStyle = '#ffffff55'; ctx.fillRect(e.x - e.face * 40, e.y + 10, 40, e.h - 20); }
     }
@@ -645,13 +732,18 @@ function draw() {
     if (p.inv > 0 && (p.inv >> 2) % 2) ctx.globalAlpha = 0.35; // respawn blink
     if (!drawPlayer(p)) { ctx.fillStyle = '#4d9fff'; ctx.fillRect(p.x, p.y, p.w, p.h); }
     ctx.globalAlpha = 1;
-    if (p.dodge > 0) trail.push({ x: p.x + p.w / 2, feet: p.y + p.h, f: p.dodge > 8 ? 0 : p.dodge > 2 ? 1 : 2, flip: p.dodgeDir < 0, t: 12, just: p.dodge > KB.DODGE.dash - KB.DODGE.just });
-    if (p.riposte > 0) { ctx.strokeStyle = pulse ? CYAN : CRIMSON; ctx.lineWidth = 2; ctx.strokeRect(p.x - 2, p.y - 2, p.w + 4, p.h + 4); }
-    if (p.parry > 0) { ctx.strokeStyle = '#7ff3ff'; ctx.lineWidth = 3; ctx.strokeRect(p.x - 4, p.y - 4, p.w + 8, p.h + 8); }
+    if (!cfg.motionBlur && p.dodge > KB.DODGE.dash - KB.DODGE.just) { ctx.save(); ctx.translate(p.x + p.w / 2, p.y + p.h / 2); inkRing(26, 3, GOLD); ctx.restore(); } // just window, when afterimages are off
+    if (cfg.motionBlur && p.dodge > 0) trail.push({ x: p.x + p.w / 2, feet: p.y + p.h, f: p.dodge > 8 ? 0 : p.dodge > 2 ? 1 : 2, flip: p.dodgeDir < 0, t: 12, just: p.dodge > KB.DODGE.dash - KB.DODGE.just });
+    if (p.riposte > 0 || p.parry > 0) {
+      ctx.save(); ctx.translate(p.x + p.w / 2, p.y + p.h / 2); ctx.rotate(rt * 0.1);
+      if (p.riposte > 0) for (let i = 0; i < 4; i++) { ctx.rotate(Math.PI / 2); dartPath(24, 36, 3.5); inked(pulse ? CYAN : CRIMSON, 1.5); } // armed: four darts
+      if (p.parry > 0) inkRing(20 + p.parry, 2 + p.parry * 0.25, GOLD); // closes as the window ends
+      ctx.restore();
+    }
   }
   for (const b of s.bullets) drawShot(b);
   for (const g of trail) { // tinted afterimages of the dodge pose (gold = just-frame window)
-    const im = tintedDodge(g.just ? GOLD : '#4d9fff'), d = CELL * SPR;
+    const im = tintedDodge(g.just ? GOLD : CRIMSON), d = CELL * SPR;
     if (im) { ctx.save(); ctx.globalAlpha = g.t / 30; ctx.translate(g.x, g.feet); if (g.flip) ctx.scale(-1, 1); ctx.drawImage(im, g.f * CELL, 0, CELL, CELL, -d / 2, -FOOT_ROW * SPR, d, d); ctx.restore(); }
     g.t--;
   }
@@ -663,17 +755,14 @@ function draw() {
   ctx.restore();
   drawForeground();
   offscreenArrows();
+  drawNovaWarning(boss);
 
   if (flash > 0) { ctx.fillStyle = `rgba(255,0,0,${(cfg.flashes ? 1 : 0.18) * flash / 30})`; ctx.fillRect(0, 0, KB.W, KB.H); flash--; }
   if (wflash > 0) { ctx.fillStyle = `rgba(255,255,255,${(cfg.flashes ? 1 : 0.12) * wflash / 14})`; ctx.fillRect(0, 0, KB.W, KB.H); wflash--; }
   drawHud(boss, pulse);
-  if (hintBox.t > 0) {
-    hintBox.t--; ctx.font = FONT_B(15); const w = ctx.measureText(hintBox.text).width + 34;
-    ctx.globalAlpha = Math.min(1, hintBox.t / 30); const hy = s.enemies.some(e => e.type === 'boss') ? 80 : 56; plate(KB.W / 2 - w / 2, hy, w, 32);
-    ctx.fillStyle = PAPER; ctx.textAlign = 'center'; ctx.fillText(hintBox.text, KB.W / 2, hy + 21); ctx.textAlign = 'left'; ctx.globalAlpha = 1;
-  }
-  if (banner.t > 0) { banner.t--; ctx.textAlign = 'center'; ctx.globalAlpha = Math.min(1, banner.t / 12); const bx = bandOn() ? 225 : KB.W / 2, by = bandOn() ? 268 : 146; label(banner.text, bx, by, FONT_D(52), PAPER, 7); ctx.fillStyle = CRIMSON; ctx.fillRect(bx - 90, by + 10, 180, 4); ctx.globalAlpha = 1; ctx.textAlign = 'left'; }
+  if (banner.t > 0) { banner.t--; ctx.textAlign = 'center'; ctx.globalAlpha = Math.min(1, banner.t / 12); const bx = bandOn() ? 225 : KB.W / 2, by = bandOn() ? 268 : 146; label(banner.text, bx, by, FONT_D(52), PAPER, 7); ctx.fillStyle = CRIMSON; ctx.fillRect(bx - 90, by + 10, 180, 4); if (banner.sub) label(banner.sub, bx, by + 40, FONT_D(24), DANGER, 5); ctx.globalAlpha = 1; ctx.textAlign = 'left'; }
   drawFloorSign();
+  if (mode === 'play') drawCrosshair();
   if (location.hash === '#boss' && s.phase !== 'boss' && !s.devBoss && s.tick >= 1) { s.devBoss = true; s.enemies = []; KB.spawnBoss(s); } // dev shortcut: index.html#boss
 }
 if (location.hash === '#boss') startGame(); else show('menu');
