@@ -48,6 +48,7 @@
     .art.racing { background: linear-gradient(135deg, #4a2b51, #26395c); }
     .art.chess { background: linear-gradient(135deg, #2b4a4f, #3a3252); }
     .art.brawl { background: linear-gradient(135deg, #4a2232, #2a2140); }
+    .art.forge { background: linear-gradient(135deg, #5a1a22, #4a2a14); }
     .game-content { display: flex; flex: 1; flex-direction: column; align-items: flex-start; padding: 18px; }
     .game h3 { margin: 0 0 5px; font-size: 1.15rem; }
     .game p { margin: 0 0 18px; color: var(--muted); font-size: .94rem; }
@@ -68,7 +69,7 @@
   <main class="wrap">
     <div class="section-head">
       <h2>Game shelf</h2>
-      <span class="count">5 games ready · more to come</span>
+      <span class="count">6 games ready · more to come</span>
     </div>
     <section class="games" aria-label="Games">
       <!-- If you rename the animeSnake repository, update this link to match. -->
@@ -116,7 +117,15 @@
           <span class="pill">▶ Play game</span>
         </div>
      </a>
-      
+      <a class="game" href="/killbox2/" aria-label="Play KILLBOX 2">
+        <div class="art forge" aria-hidden="true">🔥</div>
+        <div class="game-content">
+          <h3>KILLBOX 2</h3>
+          <p>A hand-inked arena shooter. Parry, dodge and execute your way through three waves and a molten boss. Keyboard and mouse, best on desktop.</p>
+          <span class="pill">▶ Play game</span>
+        </div>
+      </a>
+
     </section>
   </main>
 
